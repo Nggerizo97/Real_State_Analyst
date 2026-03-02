@@ -5,6 +5,8 @@ from fake_useragent import UserAgent
 import random
 import time
 import hashlib
+import pandas as pd
+from datetime import datetime
 from src.utils.s3_connector import S3Connector
 from src.utils.logger import get_logger
 from config.settings import S3_BRONZE_PREFIX
@@ -21,10 +23,20 @@ class BaseScraper(ABC):
         self.logger = get_logger(self.__class__.__name__)
         # Construye la ruta ej. raw/fincaraiz/
         self.prefix = f"{S3_BRONZE_PREFIX}/{self.portal_name}"
+        
+        # --- NUEVO: Infraestructura DataOps "Parquet Batching" ---
+        self.scraped_data = []  # Memoria temporal para acumular inmuebles
+        self.hash_index_key = f"{self.prefix}/_hash_index.txt"
+        self.historical_hashes = set()
 
     def run(self, max_pages: int = 5):
         """Ciclo de vida principal del scraper (Playwright y Manejador de Errores)."""
         self.logger.info(f"Iniciando ingesta Serverless para {self.portal_name}")
+        
+        # 1. Cargar la "memoria" del bot (Zero Cost Optimization real)
+        self.logger.info(f"Descargando memoria de hashes previa de S3...")
+        self.historical_hashes = self.s3.download_hash_index(self.hash_index_key)
+        self.logger.info(f"Cargados {len(self.historical_hashes)} hashes históricos.")
         
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -61,6 +73,26 @@ class BaseScraper(ABC):
             finally:
                 context.close()
                 browser.close()
+                
+                # --- NUEVO: Fase de Batch Upload (Data Lake Optimization) ---
+                if self.scraped_data:
+                    self.logger.info(f"Preparando conversión a Parquet de {len(self.scraped_data)} nuevos inmuebles/actualizaciones...")
+                    df = pd.DataFrame(self.scraped_data)
+                    
+                    # Generar nombre del archivo Parquet con timestamp
+                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                    parquet_key = f"{self.prefix}/batches/{self.portal_name}_{timestamp}.parquet"
+                    
+                    if self.s3.upload_parquet(parquet_key, df):
+                        self.logger.info(f"Subida masiva exitosa a S3: {parquet_key}")
+                        # Solo actualizamos el índice maestro si el Parquet subió correctamente
+                        self.logger.info("Actualizando índice de Hashes Maestro...")
+                        self.s3.upload_hash_index(self.hash_index_key, self.historical_hashes)
+                    else:
+                        self.logger.error(f"Fallo al subir el batch Parquet a S3. Los hashes no se actualizarán.")
+                else:
+                    self.logger.info(f"No hay inmuebles nuevos o cambios de precio para subir.")
+                    
                 self.logger.info(f"Ingesta finalizada para {self.portal_name}")
 
     @abstractmethod
@@ -73,32 +105,25 @@ class BaseScraper(ABC):
 
     def process_and_upload(self, property_data: Dict[str, Any], property_id: str) -> bool:
         """
-        Maneja la lógica de validación S3 (Deduplicación) y subida "Zero Cost".
-        Implementa SCD Type 2: Si el precio cambia, generará un Hash diferente 
-        y guardará la nueva versión en S3, reteniendo el historial de precios.
+        Maneja la lógica de validación S3 en Memoria (Deduplicación) y acumulación "Zero Cost".
+        Implementa SCD Type 2: Si el precio cambia, generará un Hash diferente.
         """
-        # Extraer el precio numérico para hashearlo junto con el ID
         precio = property_data.get("precio_num", 0)
-        
-        # Crear un string único combinando el ID y el Precio
         unique_string = f"{property_id}_{precio}"
-        
-        # Generar un hash MD5 corto (10 caracteres por limpieza visual en S3)
         price_hash = hashlib.md5(unique_string.encode('utf-8')).hexdigest()[:10]
+        id_hash = f"{property_id}_{price_hash}"
         
-        # El nuevo nombre del archivo en S3: ID_Hash.json
-        s3_key = f"{self.prefix}/{property_id}_{price_hash}.json"
-        
-        # --- ZERO COST MECHANISM: Evitar escrituras duplicadas ---
-        if self.s3.item_exists(s3_key):
-            self.logger.info(f"Inmueble {property_id} (Precio sin cambios) ya existe en S3. Ignorando subida.")
+        # --- ZERO COST MECHANISM: Validar contra memoria RAM en vez de llamadas web S3 ---
+        if id_hash in self.historical_hashes:
+            self.logger.info(f"Inmueble {property_id} (Precio sin cambios) ignorado (SCD Type 2).")
             return False
             
-        success = self.s3.upload_json(s3_key, property_data)
-        if success:
-            self.logger.info(f"Subido exitosamente nuevo inmueble/versión {property_id} a S3 ({s3_key}).")
+        # Si es nuevo, lo agregamos a nuestra memoria local temporal y al log global de hashes
+        self.historical_hashes.add(id_hash)
+        self.scraped_data.append(property_data)
+        self.logger.info(f"Nuevo/Actualizado: {property_id} agregado a la cola de procesamiento (Batch).")
         
-        return success
+        return True
         
     def human_delay(self, page: Page = None, min_ms: int = 2000, max_ms: int = 5000):
         """

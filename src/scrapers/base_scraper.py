@@ -4,6 +4,7 @@ from playwright.sync_api import sync_playwright, Page, BrowserContext
 from fake_useragent import UserAgent
 import random
 import time
+import hashlib
 from src.utils.s3_connector import S3Connector
 from src.utils.logger import get_logger
 from config.settings import S3_BRONZE_PREFIX
@@ -73,17 +74,29 @@ class BaseScraper(ABC):
     def process_and_upload(self, property_data: Dict[str, Any], property_id: str) -> bool:
         """
         Maneja la lógica de validación S3 (Deduplicación) y subida "Zero Cost".
+        Implementa SCD Type 2: Si el precio cambia, generará un Hash diferente 
+        y guardará la nueva versión en S3, reteniendo el historial de precios.
         """
-        s3_key = f"{self.prefix}/{property_id}.json"
+        # Extraer el precio numérico para hashearlo junto con el ID
+        precio = property_data.get("precio_num", 0)
+        
+        # Crear un string único combinando el ID y el Precio
+        unique_string = f"{property_id}_{precio}"
+        
+        # Generar un hash MD5 corto (10 caracteres por limpieza visual en S3)
+        price_hash = hashlib.md5(unique_string.encode('utf-8')).hexdigest()[:10]
+        
+        # El nuevo nombre del archivo en S3: ID_Hash.json
+        s3_key = f"{self.prefix}/{property_id}_{price_hash}.json"
         
         # --- ZERO COST MECHANISM: Evitar escrituras duplicadas ---
         if self.s3.item_exists(s3_key):
-            self.logger.info(f"Inmueble {property_id} ya existe en S3. Ignorando para optimizar costos de subida S3.")
+            self.logger.info(f"Inmueble {property_id} (Precio sin cambios) ya existe en S3. Ignorando subida.")
             return False
             
         success = self.s3.upload_json(s3_key, property_data)
         if success:
-            self.logger.info(f"Subido exitosamente nuevo inmueble {property_id} a S3 ({s3_key}).")
+            self.logger.info(f"Subido exitosamente nuevo inmueble/versión {property_id} a S3 ({s3_key}).")
         
         return success
         

@@ -252,7 +252,7 @@ if not df_filtrado_ui.empty:
             "precio_predicho": "${:,.0f}",
             "rentabilidad_potencial": "{:.2f}%"
         }).background_gradient(subset=['rentabilidad_potencial'], cmap='RdYlGn', vmin=-10, vmax=30),
-        use_container_width=True,
+        width=None, # or you can remove width to stick to defaults depending on version, or just leave it
         hide_index=True
     )
 else:

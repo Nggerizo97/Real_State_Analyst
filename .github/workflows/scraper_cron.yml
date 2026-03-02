@@ -53,11 +53,19 @@ jobs:
         run: |
           echo "🚀 Triggering Databricks Job ID: $JOB_ID..."
           
+          # Limpiar URL por si el usuario la guardó con un "/" al final o sin "https://"
+          HOST="${DATABRICKS_HOST%/}"
+          if [[ ! "$HOST" =~ ^https?:// ]]; then
+            HOST="https://$HOST"
+          fi
+          
+          echo "Connecting to: $HOST/api/2.1/jobs/run-now"
+          
           response=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            "${DATABRICKS_HOST}/api/2.1/jobs/run-now" \
+            "${HOST}/api/2.1/jobs/run-now" \
             -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d "{\"job_id\": $JOB_ID}")
+            -d "{\"job_id\": $JOB_ID}") || true
           
           if [ "$response" -eq 200 ]; then
             echo "✅ Databricks Job started successfully!"

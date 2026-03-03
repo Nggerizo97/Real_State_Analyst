@@ -25,21 +25,27 @@ class FacebookScraper(BaseScraper):
         self.logger.info(f"{self.portal_name.capitalize()} - Navegando a URL: {url}")
         
         try:
+            # Facebook Marketplace relies heavily on React, so networkidle is crucial
             page.goto(url, wait_until="networkidle", timeout=60000)
-            # En Facebook suele salir un banner de cookies o login
-            self.human_delay(page, 3000, 5000)
+            
+            # Additional hard wait because Facebook renders async chunks after network is 'idle'
+            self.logger.info("Esperando renderizado de Virtual DOM de Facebook...")
+            page.wait_for_timeout(5000)
             
             try:
-                # Intentar cerrar el popup de inicio de sesión si aparece (la X suele tener aria-label="Close" o "Cerrar")
-                close_btn = page.query_selector("[aria-label='Cerrar']") or page.query_selector("[aria-label='Close']")
-                if close_btn:
-                    close_btn.click()
-                    self.logger.info("Cerrado popup de login/cookies.")
+                # Intentar cerrar el popup de inicio de sesión si aparece
+                for selector in ["[aria-label='Cerrar']", "[aria-label='Close']", "div[role='dialog'] [aria-label='Close']"]:
+                    close_btn = page.query_selector(selector)
+                    if close_btn:
+                        close_btn.click()
+                        self.logger.info(f"Cerrado popup de login/cookies con selector {selector}.")
+                        page.wait_for_timeout(2000)
+                        break
             except Exception:
                 pass
                 
         except Exception as e:
-            self.logger.error(f"Error navegando a {url}: {e}")
+            self.logger.error(f"Error crítico navegando a {url}: {e}. Facebook bloqueó la conexión inicial.")
             return
             
         # Paginación en Facebook es por scroll infinito con virtualización (descarga items no visibles)
@@ -49,16 +55,30 @@ class FacebookScraper(BaseScraper):
         for i in range(max_pages):
             self.logger.info(f"{self.portal_name.capitalize()} - Extrayendo items visibles, scroll {i+1}/{max_pages}...")
             
-            # Esperar a que haya al menos un elemento
+            # Simular scroll para forzar cargar el lazy load de la lista
+            page.mouse.wheel(0, 500)
+            page.wait_for_timeout(2000)
+            
+            # El Link hacia la tarjeta de Facebook Inmuebles. 
+            # A la fecha actual, las URL son dinámicas pero contienen /item/ u /object/
             try:
-                page.wait_for_selector("a[href*='/item/']", timeout=5000)
+                page.wait_for_selector("a[href*='/item/']", timeout=8000)
             except:
-                pass
+                self.logger.warning(f"No se detectaron items visibles en scroll {i+1}. Búsqueda alternativa...")
+                # Second attempt checking generic links that might be masked
                 
             links = page.query_selector_all("a[href*='/item/']")
+            if not links:
+                links = page.eval_on_selector_all("a", "elements => elements.filter(el => el.href && el.href.includes('/item/'))")
+                
+            if not links:
+                 self.logger.warning("Facebook no retornó inmuebles (posible muro de Login/Captcha invisible).")
+                        
+            # Parsear los links extraídos si existen
             for link in links:
                 try:
-                    href = link.get_attribute("href")
+                    # En algunos casos fetch eval_on_selector_all devuelve un array de strings si se configuró así
+                    href = link.get_attribute("href") if hasattr(link, "get_attribute") else link
                     if not href:
                         continue
                         
@@ -72,8 +92,9 @@ class FacebookScraper(BaseScraper):
                         
                     processed_ids.add(item_id)
                     
-                    # Llamar extract inmediatamente para capturar texto antes de que React desmonte el elemento
-                    self._extract_property(page, link, item_id, href)
+                    # Llamar extract si tenemos el elemento DOM, de lo contrario lo saltamos
+                    if hasattr(link, "inner_text"):
+                        self._extract_property(page, link, item_id, href)
                     
                 except Exception as eval_err:
                     pass

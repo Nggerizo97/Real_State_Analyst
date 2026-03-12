@@ -66,14 +66,14 @@ PORTALS_CONFIG = {
     },
     "mitula": {
         "base_url": "https://www.mitula.com.co",
-        "enabled": False
+        "enabled": False  # Stub — selectores CSS pendientes
     },
     "bancolombia_tu360": {
-        "base_url": "https://inmobiliariotu360.bancolombia.com/nuevo?_gl=1*bo27f6*_ga*NDAzOTMyMTMuMTcyNDYzODc2Ng..*_ga_H0ZHB9SNF4*czE3NzIzOTAzMjEkbzEzJGcwJHQxNzcyMzkwMzIxJGo2MCRsMSRoMTA4ODQ1MjQwNw..*_gcl_au*MjAxMjAwMjg3NC4xNzcxMDIwOTE2*_ga_B6YXBDTWFL*czE3NzIzOTAzMjEkbzckZzEkdDE3NzIzOTAzMjMkajU4JGwwJGgw",
+        "base_url": "https://inmobiliariotu360.bancolombia.com",
         "enabled": True
     },
     "davivienda": {
         "base_url": "https://www.davivienda.com",
-        "enabled": False
+        "enabled": False  # Stub — selectores CSS pendientes
     }
 }

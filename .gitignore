@@ -41,3 +41,8 @@ notebooks/.ipynb_checkpoints/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Scraper artifacts (local runs)
+output/
+logs/
+fb_debug.html

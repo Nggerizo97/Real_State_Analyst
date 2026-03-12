@@ -7,66 +7,87 @@ on:
   workflow_dispatch: # Allows manual triggering from GitHub UI
 
 jobs:
-  scrape-and-upload:
-    name: Playwright Scraping
+  scrape:
+    name: "Scrape ${{ matrix.scraper }}"
     runs-on: ubuntu-22.04
-    
+    strategy:
+      fail-fast: false  # Un fallo en un scraper no cancela los demás
+      matrix:
+        include:
+          - scraper: bancolombia
+            pages: 999
+          - scraper: fincaraiz
+            pages: 10
+          - scraper: mercadolibre
+            pages: 10
+          - scraper: metrocuadrado
+            pages: 10
+          - scraper: ciencuadras
+            pages: 10
+          - scraper: properati
+            pages: 10
+          - scraper: facebook
+            pages: 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip' 
-          
+          cache: 'pip'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          
+
       - name: Install Playwright Browsers
         run: |
           playwright install chromium --with-deps
-          
-      - name: Run Modular Data Ingestion
-        # Usamos los secrets del repositorio de manera super segura 
-        # python-dotenv NO leerá un .env porque no existe en la Action, 
-        # leerá estas variables de entorno de OS que pasamos aquí
+
+      - name: "Run scraper: ${{ matrix.scraper }}"
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
         run: |
-          echo "Starting Real Estate Scalable Pipeline..."
-          python main.py
-          echo "Pipeline finished."
+          echo "Starting ${{ matrix.scraper }} scraper (max_pages=${{ matrix.pages }})..."
+          python scripts/run_${{ matrix.scraper }}.py --pages ${{ matrix.pages }}
+          echo "${{ matrix.scraper }} scraper finished."
 
+  trigger-etl:
+    name: Trigger Databricks ETL
+    needs: scrape
+    if: always()  # Ejecuta ETL independientemente de si algún scraper falló
+    runs-on: ubuntu-22.04
+
+    steps:
       - name: Trigger Databricks ETL Job
-        if: success()
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           JOB_ID: ${{ secrets.DATABRICKS_JOB_ID }}
         run: |
           echo "🚀 Triggering Databricks Job ID: $JOB_ID..."
-          
+
           # Limpiar URL por si el usuario la guardó con un "/" al final o sin "https://"
           HOST="${DATABRICKS_HOST%/}"
           if [[ ! "$HOST" =~ ^https?:// ]]; then
             HOST="https://$HOST"
           fi
-          
+
           echo "Connecting to: $HOST/api/2.1/jobs/run-now"
-          
+
           response=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
             "${HOST}/api/2.1/jobs/run-now" \
             -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"job_id\": $JOB_ID}") || true
-          
+
           if [ "$response" -eq 200 ]; then
             echo "✅ Databricks Job started successfully!"
           else

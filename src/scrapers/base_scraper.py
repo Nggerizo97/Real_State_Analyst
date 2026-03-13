@@ -27,15 +27,11 @@ from src.utils.logger import get_logger
 from src.utils.s3_connector import S3Connector
 
 # ---------------------------------------------------------------------------
-# User-Agents (solo Chrome/Edge desktop → DOM más estable)
+# User-Agents (Fijado a Chrome 122 para match exacto con Sec-Ch-Ua headers)
 # ---------------------------------------------------------------------------
 _USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
 ]
 
 # ---------------------------------------------------------------------------
@@ -107,6 +103,7 @@ class BaseScraper(ABC):
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-infobars",
+                    f"--window-size={width},{height}",
                 ],
             )
             context = browser.new_context(
@@ -116,6 +113,14 @@ class BaseScraper(ABC):
                 timezone_id="America/Bogota",
                 extra_http_headers={
                     "Accept-Language": "es-CO,es;q=0.9,en-US;q=0.8",
+                    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Upgrade-Insecure-Requests": "1"
                 },
             )
             context.add_init_script(_STEALTH_SCRIPT)

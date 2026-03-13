@@ -35,21 +35,46 @@ _USER_AGENTS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Stealth JS (inyectado en cada nueva página)
+# Stealth JS (inyectado para evadir DataDome/PerimeterX)
 # ---------------------------------------------------------------------------
 _STEALTH_SCRIPT = """
 (() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    // 1. Eliminar rastro de Headless
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    
+    // 2. Mockear Plugins y MimeTypes
     Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    Object.defineProperty(navigator, 'languages', {
-        get: () => ['es-CO', 'es', 'en-US', 'en']
+    Object.defineProperty(navigator, 'mimeTypes', { get: () => [1, 2, 3, 4] });
+    
+    // 3. Mockear window.chrome
+    window.chrome = {
+        runtime: {},
+        app: { InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }, isInstalled: false, getDetails: function() {}, getIsInstalled: function() { return false; }, runningState: function() { return 'cannot_run'; } },
+        csi: function() {},
+        loadTimes: function() {}
+    };
+    
+    // 4. Parchear permissions API
+    const origQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications' ?
+            Promise.resolve({ state: Notification.permission }) :
+            origQuery(parameters)
+    );
+    
+    // 5. Parchear getParameter para WebGL (muy usado por DataDome)
+    const getParameterProxyHandler = {
+        apply: function(target, ctx, args) {
+            const param = (args || [])[0];
+            if (param === 37445) return 'Google Inc. (NVIDIA API)';
+            if (param === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            return Reflect.apply(target, ctx, args);
+        }
+    };
+    const proxy = new Proxy(WebGLRenderingContext.prototype.getParameter, getParameterProxyHandler);
+    Object.defineProperty(WebGLRenderingContext.prototype, 'getParameter', {
+        configurable: true, enumerable: false, writable: false, value: proxy
     });
-    if (!window.chrome) { window.chrome = { runtime: {} }; }
-    const _origQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (params) =>
-        params.name === 'notifications'
-            ? Promise.resolve({ state: Notification.permission })
-            : _origQuery(params);
 })();
 """
 
@@ -120,11 +145,13 @@ class BaseScraper(ABC):
                     "Sec-Fetch-Mode": "navigate",
                     "Sec-Fetch-Site": "none",
                     "Sec-Fetch-User": "?1",
-                    "Upgrade-Insecure-Requests": "1"
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-User": "?1"
                 },
             )
-            context.add_init_script(_STEALTH_SCRIPT)
+            
             page = context.new_page()
+            page.add_init_script(_STEALTH_SCRIPT)
 
             self.logger.info(
                 f"Browser lanzado | UA=...{ua[-40:]} | viewport={width}x{height}"

@@ -35,7 +35,10 @@ def main() -> None:
         print(f"  Registros extraídos ({len(scraper.scraped_data)} total)")
         print(f"{'=' * 60}")
         for i, r in enumerate(scraper.scraped_data, 1):
-            print(f"[{i:>3}] {r.get('id_inmueble', '?'):20s} | {r.get('price', 'N/A'):>15s} | {r.get('title', '?')[:50]}")
+            title_display = r.get('titulo', '?')
+            if title_display == 'N/A' or title_display == '?':
+                title_display = r.get('tipo_inmueble', '') + " " + r.get('ubicacion', '')
+            print(f"[{i:>3}] {r.get('id_inmueble', '?'):20s} | {r.get('precio', 'N/A'):>15s} | {title_display[:50]}")
 
 
 if __name__ == "__main__":

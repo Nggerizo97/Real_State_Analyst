@@ -23,21 +23,33 @@ class MercadoLibreScraper(BaseScraper):
         self.base_url = PORTALS_CONFIG[self.portal_name]["base_url"]
 
     def scrape_pages(self, page: Page, max_pages: int) -> None:
-        url = f"{self.base_url}/inmuebles/venta/_NoIndex_True"
-
-        page.goto(url, wait_until="networkidle", timeout=45_000)
+        base_url = f"{self.base_url}/inmuebles/venta/_NoIndex_True"
 
         for current_page in range(1, max_pages + 1):
+            if current_page == 1:
+                url = base_url
+            else:
+                offset = (current_page - 1) * 48 + 1
+                # The format is domain/inmuebles/venta/_Desde_49_NoIndex_True
+                url = f"{self.base_url}/inmuebles/venta/_Desde_{offset}_NoIndex_True"
+
             self.logger.info(
-                f"Página {current_page}/{max_pages}: {page.url[:120]}"
+                f"Página {current_page}/{max_pages}: {url[:100]}"
             )
+
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+            except Exception as e:
+                self.logger.error(f"Error al navegar a la página {current_page}: {e}")
+                self.human_delay(page=None, min_ms=5000, max_ms=10000)
+                continue
 
             self.human_delay(page)
 
             # Buscar tarjetas con selectores estables + fallback
             items = self._wait_for_items(page)
             if not items:
-                self.logger.info("Sin resultados. Deteniendo.")
+                self.logger.info("Sin resultados o redirigido a CAPTCHA. Deteniendo paginación.")
                 break
 
             self.logger.info(
@@ -48,22 +60,6 @@ class MercadoLibreScraper(BaseScraper):
                 self._extract_property(item, page.url)
 
             self.human_delay(page, 1500, 3000)
-
-            # Buscar botón "Siguiente" y hacer clic
-            next_btn = page.query_selector(
-                "li.andes-pagination__button--next"
-                ":not(.andes-pagination__button--disabled) a"
-            )
-            if not next_btn:
-                self.logger.info("No hay más páginas (sin botón Siguiente).")
-                break
-
-            try:
-                next_btn.click()
-                page.wait_for_load_state("networkidle", timeout=30_000)
-            except Exception as e:
-                self.logger.error(f"Error al navegar a siguiente página: {e}")
-                break
 
     # ------------------------------------------------------------------
     # Espera de items con fallback

@@ -26,8 +26,6 @@ jobs:
             pages: 999
           - scraper: properati
             pages: 999
-          - scraper: facebook
-            pages: 999
 
     steps:
       - name: Checkout repository

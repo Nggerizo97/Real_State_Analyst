@@ -85,14 +85,14 @@ class MetrocuadradoScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     def _wait_for_cards(self, page: Page, timeout: int = 12_000):
-        """Espera y retorna las tarjetas de resultados."""
+        """Espera y retorna las tarjetas de resultados (excluyendo los destacados top)."""
         try:
             page.wait_for_selector(
-                "div.property-card__container", timeout=timeout, state="attached"
+                ".property-list__results div.property-card__container", timeout=timeout, state="attached"
             )
         except Exception:
             return []
-        return page.query_selector_all("div.property-card__container")
+        return page.query_selector_all(".property-list__results div.property-card__container")
 
     # ------------------------------------------------------------------
     # Extracción de datos por tarjeta

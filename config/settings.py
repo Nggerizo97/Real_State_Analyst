@@ -30,7 +30,7 @@ PORTALS_CONFIG = {
     },
     "facebook": {
         "base_url": "https://web.facebook.com/marketplace",
-        "enabled": True
+        "enabled": False
     },
     "metrocuadrado": {
         "base_url": "https://www.metrocuadrado.com",

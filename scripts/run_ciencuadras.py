@@ -4,7 +4,7 @@ scripts/run_ciencuadras.py
 Runner individual para Ciencuadras.
 
 Uso:
-    python scripts/run_ciencuadras.py              # 10 páginas (default)
+    python scripts/run_ciencuadras.py              # 999 páginas (default)
     python scripts/run_ciencuadras.py --pages 20   # N páginas
     python scripts/run_ciencuadras.py --show       # Imprime registros en consola
 """
@@ -23,7 +23,7 @@ def main() -> None:
         description="Scraper — Ciencuadras",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--pages", type=int, default=10, help="Máximo de páginas a recorrer.")
+    parser.add_argument("--pages", type=int, default=999, help="Máximo de páginas a recorrer.")
     parser.add_argument("--show", action="store_true", help="Imprime registros en consola al finalizar.")
     args = parser.parse_args()
 

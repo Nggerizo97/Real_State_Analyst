@@ -4,7 +4,7 @@ scripts/run_fincaraiz.py
 Runner individual para Finca Raíz.
 
 Uso:
-    python scripts/run_fincaraiz.py                                # 10 páginas (default)
+    python scripts/run_fincaraiz.py                                # 999 páginas (default)
     python scripts/run_fincaraiz.py --url-path /venta/bogota       # Path específico
     python scripts/run_fincaraiz.py --pages 20                     # N páginas
     python scripts/run_fincaraiz.py --headed                       # Ventana visible
@@ -26,7 +26,7 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--pages", type=int, default=10, help="Máximo de páginas a recorrer."
+        "--pages", type=int, default=999, help="Máximo de páginas a recorrer."
     )
     parser.add_argument(
         "--headed",

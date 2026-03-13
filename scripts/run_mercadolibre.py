@@ -4,7 +4,7 @@ scripts/run_mercadolibre.py
 Runner individual para MercadoLibre.
 
 Uso:
-    python scripts/run_mercadolibre.py              # 10 páginas (default)
+    python scripts/run_mercadolibre.py              # 999 páginas (default)
     python scripts/run_mercadolibre.py --pages 20   # N páginas
     python scripts/run_mercadolibre.py --headed      # Abre navegador visible
     python scripts/run_mercadolibre.py --show        # Imprime registros en consola
@@ -25,7 +25,7 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--pages", type=int, default=10,
+        "--pages", type=int, default=999,
         help="Máximo de páginas a recorrer.",
     )
     parser.add_argument(

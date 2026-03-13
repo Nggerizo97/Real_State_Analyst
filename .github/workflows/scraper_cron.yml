@@ -17,17 +17,17 @@ jobs:
           - scraper: bancolombia
             pages: 999
           - scraper: fincaraiz
-            pages: 10
+            pages: 999
           - scraper: mercadolibre
-            pages: 10
+            pages: 999
           - scraper: metrocuadrado
-            pages: 10
+            pages: 999
           - scraper: ciencuadras
-            pages: 10
+            pages: 999
           - scraper: properati
-            pages: 10
+            pages: 999
           - scraper: facebook
-            pages: 5
+            pages: 999
 
     steps:
       - name: Checkout repository
@@ -48,12 +48,23 @@ jobs:
         run: |
           playwright install chromium --with-deps
 
+      - name: Setup Cloudflare WARP (Bypass DataDome IP Blocks)
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ jammy main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update && sudo apt-get install cloudflare-warp
+          warp-cli --accept-tos register
+          warp-cli --accept-tos set-mode proxy
+          warp-cli --accept-tos connect
+          sleep 5
+
       - name: "Run scraper: ${{ matrix.scraper }}"
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          PROXY_URL: "socks5://127.0.0.1:40000"
         run: |
           echo "Starting ${{ matrix.scraper }} scraper (max_pages=${{ matrix.pages }})..."
           python scripts/run_${{ matrix.scraper }}.py --pages ${{ matrix.pages }}

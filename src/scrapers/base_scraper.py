@@ -12,6 +12,7 @@ Flujo:
 """
 
 import hashlib
+import os
 import random
 import re
 import time
@@ -120,9 +121,13 @@ class BaseScraper(ABC):
         width = random.choice([1280, 1366, 1440, 1920])
         height = random.choice([768, 800, 900, 1080])
 
+        proxy_url = os.getenv("PROXY_URL")
+        proxy_config = {"server": proxy_url} if proxy_url else None
+
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=headless,
+                proxy=proxy_config,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",

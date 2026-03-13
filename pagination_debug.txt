@@ -1,5 +1,0 @@
---- PAGINATION HTML ---
-<a class="header_btn CO" href="/proyectos-vivienda">Proyectos de vivienda</a><a class="header_btn CO" href="/venta">Venta</a><a class="header_btn CO" href="/arriendo">Arriendo</a><a class="header_btn CO" href="/inmobiliarias">Inmobiliarias</a><a class="header_btn CO" href="/constructoras">Constructoras</a><a class="header_btn CO" href="https://www.fincaraiz.com.co/blog/">Noticias</a><a class="header_btn CO" href="/vivienda-vis">Vivienda VIS</a>
-
---- NEXT BUTTON HTML ---
-<a class="ant-pagination-item-link CO" href="/venta/apartamentos/bogota-dc/pagina2" rel="nofollow">&gt;</a>

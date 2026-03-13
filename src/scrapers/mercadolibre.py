@@ -1,95 +1,173 @@
+"""
+src/scrapers/mercadolibre.py
+============================
+Scraper de inmuebles en venta en MercadoLibre Colombia.
+
+URL base: https://listado.mercadolibre.com.co/inmuebles/venta/_NoIndex_True
+Pagina con click en "Siguiente" hasta agotar páginas o alcanzar el límite.
+"""
+
+import re
 import time
 from datetime import datetime
+
 from playwright.sync_api import Page
-from src.scrapers.base_scraper import BaseScraper
+
 from config.settings import PORTALS_CONFIG
+from src.scrapers.base_scraper import BaseScraper
+
 
 class MercadoLibreScraper(BaseScraper):
     def __init__(self):
         super().__init__("mercadolibre")
         self.base_url = PORTALS_CONFIG[self.portal_name]["base_url"]
-        
-    def scrape_pages(self, page: Page, max_pages: int):
-        # Usa la URL base configurada o con filtros iniciales
-        url = f"{self.base_url}/inmuebles/casas/_NoIndex_True"
-        
+
+    def scrape_pages(self, page: Page, max_pages: int) -> None:
+        url = f"{self.base_url}/inmuebles/venta/_NoIndex_True"
+
+        page.goto(url, wait_until="networkidle", timeout=45_000)
+
         for current_page in range(1, max_pages + 1):
-            self.logger.info(f"{self.portal_name.capitalize()} - Navegando a página {current_page}: {url}")
-            try:
-                # Wait until network is mostly idle to ensure dynamic React content loads
-                page.goto(url, wait_until="networkidle", timeout=30000)
-            except Exception as e:
-                self.logger.error(f"Error navegando a la página {current_page}: {e}")
-                break
-                
-            self.human_delay(page) # Simula humano explorando el DOM
-            
-            # Mercadolibre cambió su DOM a .andes-card o .ui-search-layout__item dependiendo del A/B testing
-            # Usar un selector mixto y darle más tiempo de vida
-            try:
-                page.wait_for_selector(".ui-search-layout__item", timeout=15000)
-                items = page.query_selector_all(".ui-search-layout__item")
-            except Exception:
-                self.logger.warning("Timeout esperando .ui-search-layout__item. Intentando dom alternativo.")
-                try:
-                    page.wait_for_selector(".andes-card", timeout=10000)
-                    items = page.query_selector_all(".andes-card")
-                except Exception as e:
-                    self.logger.error(f"Error crítico en DOM de ML. Página posiblemente bloqueada por Captcha. {e}")
-                    break
-                    
-            self.logger.info(f"Encontrados {len(items)} inmuebles en la página {current_page}")
-            
+            self.logger.info(
+                f"Página {current_page}/{max_pages}: {page.url[:120]}"
+            )
+
+            self.human_delay(page)
+
+            # Buscar tarjetas con selectores estables + fallback
+            items = self._wait_for_items(page)
             if not items:
-                self.logger.info("Lista vacía. Deteniendo scraper para MercadoLibre.")
+                self.logger.info("Sin resultados. Deteniendo.")
                 break
-                
+
+            self.logger.info(
+                f"Encontrados {len(items)} inmuebles en página {current_page}"
+            )
+
             for item in items:
                 self._extract_property(item, page.url)
-                
-            self.human_delay(page, 1500, 3000) # Pausa entre páginas
-            
-            # Buscar el botón "Siguiente" usando el selector de MercadoLibre
-            next_button = page.query_selector("li.andes-pagination__button--next a")
-            if next_button:
-                url = next_button.get_attribute("href")
-            else:
-                self.logger.info("No hay más páginas.")
+
+            self.human_delay(page, 1500, 3000)
+
+            # Buscar botón "Siguiente" y hacer clic
+            next_btn = page.query_selector(
+                "li.andes-pagination__button--next"
+                ":not(.andes-pagination__button--disabled) a"
+            )
+            if not next_btn:
+                self.logger.info("No hay más páginas (sin botón Siguiente).")
                 break
 
-    def _extract_property(self, element, source_url):
-        try:
-            # En base a la estructura: poly-component__title tiene el enlace y titulo
-            link_el = element.query_selector(".poly-component__title")
-            title = link_el.inner_text().strip() if link_el else "N/A"
-            href = link_el.get_attribute("href") if link_el else ""
-            
-            if href:
-                # Extraer MCO-123456... de la URL
-                import re
-                match = re.search(r'(MCO-\d+)', href)
-                id_attr = match.group(1) if match else str(int(time.time() * 1000))
-            else:
-                id_attr = str(int(time.time() * 1000))
+            try:
+                next_btn.click()
+                page.wait_for_load_state("networkidle", timeout=30_000)
+            except Exception as e:
+                self.logger.error(f"Error al navegar a siguiente página: {e}")
+                break
 
-            price_el = element.query_selector(".andes-money-amount__fraction")
-            location_el = element.query_selector(".poly-component__location")
-            
-            # Extraer specs de la lista (ej. 4 habs | 3 baños)
-            specs = element.query_selector_all(".poly-attributes_list__item")
-            area = specs[-1].inner_text().strip() if specs and len(specs) > 0 else "N/A"
+    # ------------------------------------------------------------------
+    # Espera de items con fallback
+    # ------------------------------------------------------------------
+
+    def _wait_for_items(self, page: Page):
+        """Espera y retorna los items con selector principal + fallback."""
+        try:
+            page.wait_for_selector(
+                "li.ui-search-layout__item", timeout=15_000
+            )
+            return page.query_selector_all("li.ui-search-layout__item")
+        except Exception:
+            self.logger.warning(
+                "Timeout con .ui-search-layout__item, probando .andes-card"
+            )
+        try:
+            page.wait_for_selector(".andes-card.poly-card", timeout=10_000)
+            return page.query_selector_all(".andes-card.poly-card")
+        except Exception as e:
+            self.logger.error(
+                f"No se encontraron items. Posible CAPTCHA o cambio de DOM: {e}"
+            )
+            return []
+
+    # ------------------------------------------------------------------
+    # Extracción de una propiedad
+    # ------------------------------------------------------------------
+
+    def _extract_property(self, element, source_url: str) -> None:
+        try:
+            # Título + enlace
+            title_el = element.query_selector("a.poly-component__title")
+            title = title_el.inner_text().strip() if title_el else "N/A"
+            href = title_el.get_attribute("href") if title_el else ""
+
+            # ID del inmueble (MCO-123456)
+            id_attr = self._extract_id(href)
+
+            # Tipo de inmueble (Casa, Apartamento, Lote...)
+            headline_el = element.query_selector(
+                "span.poly-component__headline"
+            )
+            property_type = (
+                headline_el.inner_text().strip() if headline_el else "N/A"
+            )
+
+            # Precio
+            price_el = element.query_selector(
+                "span.andes-money-amount__fraction"
+            )
+            price_raw = price_el.inner_text().strip() if price_el else "0"
+            precio_num = self.parse_price(price_raw)
+
+            # Ubicación
+            location_el = element.query_selector(
+                "span.poly-component__location"
+            )
+            location = (
+                location_el.inner_text().strip() if location_el else "N/A"
+            )
+
+            # Atributos (habitaciones, baños, m²)
+            specs = element.query_selector_all("li.poly-attributes_list__item")
+            habitaciones = ""
+            banos = ""
+            area = ""
+            for spec in specs:
+                txt = spec.inner_text().strip().lower()
+                if "habitaci" in txt:
+                    habitaciones = spec.inner_text().strip()
+                elif "baño" in txt:
+                    banos = spec.inner_text().strip()
+                elif "m²" in txt or "ha " in txt:
+                    area = spec.inner_text().strip()
 
             prop_data = {
                 "id_inmueble": id_attr,
                 "title": title,
-                "price": price_el.inner_text().strip() if price_el else "N/A",
-                "location": location_el.inner_text().strip() if location_el else "N/A",
+                "property_type": property_type,
+                "price": price_raw,
+                "precio_num": precio_num,
+                "location": location,
+                "habitaciones": habitaciones,
+                "banos": banos,
                 "area": area,
                 "source": self.portal_name,
                 "url": href if href else source_url,
-                "extracted_at": datetime.utcnow().isoformat()
+                "extracted_at": datetime.utcnow().isoformat(),
             }
-            
+
             self.process_and_upload(prop_data, id_attr)
+
         except Exception as e:
-            self.logger.error(f"Error extrayendo property de MercadoLibre: {e}")
+            self.logger.error(f"Error extrayendo propiedad: {e}")
+
+    # ------------------------------------------------------------------
+    # Utilidades
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_id(href: str) -> str:
+        """Extrae MCO-123456 de la URL de MercadoLibre."""
+        if not href:
+            return str(int(time.time() * 1000))
+        match = re.search(r"(MCO-?\d+)", href)
+        return match.group(1) if match else str(int(time.time() * 1000))

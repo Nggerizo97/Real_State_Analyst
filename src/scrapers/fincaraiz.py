@@ -19,22 +19,21 @@ from src.scrapers.base_scraper import BaseScraper
 
 
 class FincaRaizScraper(BaseScraper):
-    def __init__(self):
+    def __init__(self, listing_path: str = "/venta/casas-y-apartamentos"):
         super().__init__("fincaraiz")
         self.base_url = PORTALS_CONFIG[self.portal_name]["base_url"]
+        self.listing_path = listing_path
 
     # ------------------------------------------------------------------
     # Navegación y paginación
     # ------------------------------------------------------------------
 
     def scrape_pages(self, page: Page, max_pages: int) -> None:
-        listing_path = "/venta/casas-y-apartamentos"
-
         for current_page in range(1, max_pages + 1):
             if current_page == 1:
-                url = f"{self.base_url}{listing_path}"
+                url = f"{self.base_url}{self.listing_path}"
             else:
-                url = f"{self.base_url}{listing_path}/pagina{current_page}"
+                url = f"{self.base_url}{self.listing_path}/pagina{current_page}"
 
             self.logger.info(
                 f"FR — Página {current_page}/{max_pages}: {url}"

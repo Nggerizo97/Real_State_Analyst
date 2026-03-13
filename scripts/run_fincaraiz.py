@@ -4,10 +4,11 @@ scripts/run_fincaraiz.py
 Runner individual para Finca Raíz.
 
 Uso:
-    python scripts/run_fincaraiz.py              # 10 páginas (default)
-    python scripts/run_fincaraiz.py --pages 20   # N páginas
-    python scripts/run_fincaraiz.py --headed      # Ventana visible
-    python scripts/run_fincaraiz.py --show        # Imprime registros en consola
+    python scripts/run_fincaraiz.py                                # 10 páginas (default)
+    python scripts/run_fincaraiz.py --url-path /venta/bogota       # Path específico
+    python scripts/run_fincaraiz.py --pages 20                     # N páginas
+    python scripts/run_fincaraiz.py --headed                       # Ventana visible
+    python scripts/run_fincaraiz.py --show                         # Imprime registros en consola
 """
 
 import argparse
@@ -37,9 +38,15 @@ def main() -> None:
         action="store_true",
         help="Imprime registros en consola al finalizar.",
     )
+    parser.add_argument(
+        "--url-path",
+        type=str,
+        default="/venta/casas-y-apartamentos",
+        help="Ruta dentro de fincaraiz.com.co (ej. /venta/apartamentos/bogota).",
+    )
     args = parser.parse_args()
 
-    scraper = FincaRaizScraper()
+    scraper = FincaRaizScraper(listing_path=args.url_path)
     scraper.run(max_pages=args.pages, headless=not args.headed)
 
     if args.show and scraper.scraped_data:

@@ -22,7 +22,9 @@ jobs:
             pages: 999
           - scraper: metrocuadrado
             pages: 999
-          - scraper: ciencuadras
+          - scraper: ciencuadras_nuevo
+            pages: 999
+          - scraper: ciencuadras_usado
             pages: 999
           - scraper: properati
             pages: 999

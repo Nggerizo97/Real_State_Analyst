@@ -36,9 +36,17 @@ PORTALS_CONFIG = {
         "base_url": "https://www.metrocuadrado.com",
         "enabled": True
     },
-    "ciencuadras": {
+    "ciencuadras_nuevo": {
         "base_url": "https://www.ciencuadras.com",
         "enabled": True
+    },
+    "ciencuadras_usado": {
+        "base_url": "https://www.ciencuadras.com",
+        "enabled": True
+    },
+    "ciencuadras": {
+        "base_url": "https://www.ciencuadras.com",
+        "enabled": False  # Deprecated in favor of split scrapers
     },
     "properati": {
         "base_url": "https://www.properati.com.co",

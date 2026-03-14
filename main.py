@@ -16,7 +16,8 @@ habilitados en secuencia (útil para pruebas rápidas en desarrollo).
 from src.scrapers.fincaraiz import FincaRaizScraper
 from src.scrapers.mercadolibre import MercadoLibreScraper
 from src.scrapers.metrocuadrado import MetrocuadradoScraper
-from src.scrapers.ciencuadras import CiencuadrasScraper
+from src.scrapers.ciencuadras_nuevo import CiencuadrasNuevoScraper
+from src.scrapers.ciencuadras_usado import CiencuadrasUsadoScraper
 from src.scrapers.properati import ProperatiScraper
 from src.scrapers.mitula import MitulaScraper
 from src.scrapers.bancolombia_tu360 import BancolombiaTu360Scraper
@@ -32,7 +33,8 @@ scraper_registry = {
     "fincaraiz": FincaRaizScraper,
     "mercadolibre": MercadoLibreScraper,
     "metrocuadrado": MetrocuadradoScraper,
-    "ciencuadras": CiencuadrasScraper,
+    "ciencuadras_nuevo": CiencuadrasNuevoScraper,
+    "ciencuadras_usado": CiencuadrasUsadoScraper,
     "properati": ProperatiScraper,
     "mitula": MitulaScraper,
     "bancolombia_tu360": BancolombiaTu360Scraper,

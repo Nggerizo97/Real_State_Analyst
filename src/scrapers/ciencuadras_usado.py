@@ -40,15 +40,13 @@ class CiencuadrasUsadoScraper(BaseScraper):
                     break
 
             # Procesar y detectar duplicados (ignorando destacados)
-            should_stop_duplicates = self._process_cards(cards, previous_page_ids)
+            is_loop = self._process_cards(cards, previous_page_ids)
+            if is_loop:
+                self.logger.warning("Detectada repetición de datos (Página Duplicada). Continuando por solicitud de 'camino completo'.")
             
             # Verificar si es la última página por UI
             if self._is_last_page(page):
-                self.logger.info("Fin por UI: Botón 'Siguiente' oculto.")
-                break
-
-            if should_stop_duplicates:
-                self.logger.info("Fin por Duplicados (Puros): Loop detectado tras filtrar destacados.")
+                self.logger.info("Fin de portal: Botón 'Siguiente' oculto.")
                 break
 
             self.human_delay(page, 1000, 2000)
@@ -56,9 +54,22 @@ class CiencuadrasUsadoScraper(BaseScraper):
     def _safe_goto(self, page: Page, url: str) -> bool:
         for attempt in range(3):
             try:
-                # Usamos wait_until='networkidle' para asegurar que Angular/React cargue los datos
-                page.goto(url, timeout=45_000, wait_until="domcontentloaded")
-                page.wait_for_timeout(2000) # Tiempo extra para hidratación
+                self.logger.info(f"Navegando a {url} (Intento {attempt+1})...")
+                # wait_until='load' es más conservador que domcontentloaded
+                page.goto(url, timeout=45_000, wait_until="load")
+                
+                # Espera inicial para que disparen APIs de resultados
+                page.wait_for_timeout(5000)
+                
+                # Cerrar filtros si están abiertos
+                try:
+                    page.wait_for_selector(".btn-close-clean", timeout=3000)
+                    page.evaluate('() => { const b = document.querySelector(".btn-close-clean"); if(b) b.click(); }')
+                    self.logger.info("Filtros laterales cerrados exitosamente.")
+                    page.wait_for_timeout(2000)
+                except:
+                    pass
+                
                 return True
             except Exception as e:
                 self.logger.warning(f"Intento {attempt + 1} falló: {e}")
@@ -66,23 +77,44 @@ class CiencuadrasUsadoScraper(BaseScraper):
         return False
 
     def _scroll_for_lazy_loading(self, page: Page):
-        for _ in range(8):
+        # Descenso escalonado para disparar hidratación (muy importante para Ciencuadras)
+        for y in [400, 800, 1200]:
+            page.evaluate(f"window.scrollTo(0, {y})")
+            page.wait_for_timeout(1500)
+        
+        # Scroll extra para el resto del contenido
+        for _ in range(5):
             page.evaluate("window.scrollBy(0, 800)")
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(800)
+            
         page.evaluate("window.scrollTo(0, 0)")
+        page.wait_for_timeout(2000)
 
     def _get_cards(self, page: Page, current_page: int):
+        # Asegurar scroll ANTES de buscar tarjetas para disparar lazy-loading
+        self._scroll_for_lazy_loading(page)
+        
         try:
-            # Esperar a que las tarjetas orgánicas (no solo las destacadas) estén presentes
-            page.wait_for_selector("article.card:not(.detach)", timeout=15_000, state="attached")
+            # Esperar a que el TÍTULO de una tarjeta esté presente (esto confirma que no es un skeleton)
+            page.wait_for_selector("article.card h3, article.card .card__title", timeout=20_000, state="attached")
         except:
             if page.query_selector("div.no-results, :has-text('Pronto tendremos un inmueble así')"):
                 self.logger.info("Mensaje de 'Sin resultados' detectado.")
             else:
-                self.logger.info(f"No se encontraron tarjetas orgánicas en pág {current_page}.")
+                self.logger.info(f"No se detectó contenido real en las tarjetas de la pág {current_page} (posible timeout de skeletons).")
+                # Guardar captura de pantalla para debug si no hay tarjetas
+                page.screenshot(path=f"debug_no_cards_usado_p{current_page}.png")
             return None
         
         cards = page.query_selector_all("article.card")
+        self.logger.info(f"Encontradas {len(cards)} tarjetas totales (hidratadas).")
+        
+        # Verificar si hay alguna orgánica (no destacada)
+        organic_cards = [c for c in cards if not c.evaluate("el => el.classList.contains('detach')")]
+        if not organic_cards:
+            self.logger.info(f"Solo se encontraron tarjetas destacadas en pág {current_page}. Reintentando...")
+            return None
+            
         return cards
 
     def _is_last_page(self, page: Page) -> bool:

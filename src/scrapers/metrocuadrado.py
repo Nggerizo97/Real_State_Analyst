@@ -76,8 +76,7 @@ class MetrocuadradoScraper(BaseScraper):
             
             current_ids_set = set(current_ids)
             if current_page > 1 and current_ids_set and current_ids_set.issubset(previous_page_ids):
-                self.logger.info("Detección de fin de resultados: La página no contiene inmuebles nuevos. Finalizando.")
-                break
+                self.logger.warning("Detectada repetición de datos (Página Duplicada). Continuando por solicitud de 'camino completo'.")
             
             previous_page_ids = current_ids_set
             # --------------------------------------

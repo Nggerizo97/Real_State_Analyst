@@ -11,7 +11,7 @@ class CiencuadrasUsadoScraper(BaseScraper):
         self.base_url = PORTALS_CONFIG[self.portal_name]["base_url"]
         
     def scrape_pages(self, page: Page, max_pages: int) -> None:
-        base_search_url = f"{self.base_url}/venta/bogota/apartamento"
+        base_search_url = f"{self.base_url}/venta"
         self.logger.info("--- INICIANDO CIENCUADRAS USADO (VENTA) ---")
         
         previous_page_ids = set()

@@ -13,12 +13,14 @@ class CiencuadrasUsadoScraper(BaseScraper):
     def scrape_pages(self, page: Page, max_pages: int) -> None:
         base_search_url = f"{self.base_url}/venta/bogota/apartamento"
         self.logger.info("--- INICIANDO CIENCUADRAS USADO (VENTA) ---")
+        
         previous_page_ids = set()
         
         for current_page in range(1, max_pages + 1):
             url = f"{base_search_url}?page={current_page}"
-            self.logger.info(f"CC (Usado) — Página {current_page}/{max_pages}: {url}")
+            self.logger.info(f"CC (Usado) — Cargando Página {current_page}/{max_pages}: {url}")
             
+            # Navegación directa por URL (más robusta en headless que clicks SPA)
             if not self._safe_goto(page, url):
                 break
 
@@ -27,17 +29,26 @@ class CiencuadrasUsadoScraper(BaseScraper):
 
             cards = self._get_cards(page, current_page)
             if cards is None:
-                break
+                # Reintento si no hay tarjetas pero no hay mensaje de "No resultados"
+                if not page.query_selector("div.no-results"):
+                    self.logger.info("Reintentando carga por falta de tarjetas...")
+                    page.reload(wait_until="domcontentloaded")
+                    page.wait_for_timeout(3000)
+                    cards = self._get_cards(page, current_page)
+                
+                if cards is None:
+                    break
 
-            # Terminar si el botón 'Siguiente' está oculto
+            # Procesar y detectar duplicados (ignorando destacados)
+            should_stop_duplicates = self._process_cards(cards, previous_page_ids)
+            
+            # Verificar si es la última página por UI
             if self._is_last_page(page):
                 self.logger.info("Fin por UI: Botón 'Siguiente' oculto.")
-                self._process_cards(cards, previous_page_ids)
                 break
 
-            # Terminar si hay loop de duplicados
-            if self._process_cards(cards, previous_page_ids):
-                self.logger.info("Fin por Duplicados: Loop detectado.")
+            if should_stop_duplicates:
+                self.logger.info("Fin por Duplicados (Puros): Loop detectado tras filtrar destacados.")
                 break
 
             self.human_delay(page, 1000, 2000)
@@ -45,7 +56,9 @@ class CiencuadrasUsadoScraper(BaseScraper):
     def _safe_goto(self, page: Page, url: str) -> bool:
         for attempt in range(3):
             try:
+                # Usamos wait_until='networkidle' para asegurar que Angular/React cargue los datos
                 page.goto(url, timeout=45_000, wait_until="domcontentloaded")
+                page.wait_for_timeout(2000) # Tiempo extra para hidratación
                 return True
             except Exception as e:
                 self.logger.warning(f"Intento {attempt + 1} falló: {e}")
@@ -60,75 +73,64 @@ class CiencuadrasUsadoScraper(BaseScraper):
 
     def _get_cards(self, page: Page, current_page: int):
         try:
-            page.wait_for_selector("ciencuadras-card, article.card.result", timeout=12_000, state="attached")
+            # Esperar a que las tarjetas orgánicas (no solo las destacadas) estén presentes
+            page.wait_for_selector("article.card:not(.detach)", timeout=15_000, state="attached")
         except:
             if page.query_selector("div.no-results, :has-text('Pronto tendremos un inmueble así')"):
                 self.logger.info("Mensaje de 'Sin resultados' detectado.")
             else:
-                self.logger.info(f"No se encontraron tarjetas en pág {current_page}.")
+                self.logger.info(f"No se encontraron tarjetas orgánicas en pág {current_page}.")
             return None
-        cards = page.query_selector_all("ciencuadras-card")
-        if not cards:
-            cards = page.query_selector_all("article.card")
+        
+        cards = page.query_selector_all("article.card")
         return cards
 
     def _is_last_page(self, page: Page) -> bool:
-        next_btn = page.query_selector('li[data-qa-id="cc-rs-rs_paginator_results_next"]')
+        next_btn = page.query_selector('[data-qa-id="cc-rs-rs_paginator_results_next"]')
         if next_btn:
             classes = next_btn.get_attribute("class") or ""
             return "hide" in classes
-        return False
+        return True
 
     def _process_cards(self, cards, previous_page_ids: set) -> bool:
-        current_ids = []
+        current_pure_ids = []
         for card in cards:
-            article_el = card.query_selector("article.card") or card
-            qa_id = article_el.get_attribute("data-qa-id")
-            if qa_id:
-                current_ids.append(qa_id)
+            is_featured = card.evaluate("el => el.classList.contains('detach')")
+            qa_id = card.get_attribute("data-qa-id")
+            
+            if qa_id and not is_featured:
+                current_pure_ids.append(qa_id)
         
-        current_ids_set = set(current_ids)
+        current_ids_set = set(current_pure_ids)
+        
         if current_ids_set and previous_page_ids and current_ids_set.issubset(previous_page_ids):
-            return True
+            return True # Loop real
+            
         previous_page_ids.update(current_ids_set)
+        
         for card in cards:
             self._extract_property(card)
         return False
 
     def _extract_property(self, card) -> None:
         try:
-            link_el = card.query_selector("a.style-none, a.card")
-            if not link_el:
-                link_el = card.evaluate_handle("el => el.closest('a')") 
-            
-            href = ""
-            if link_el:
-                href = link_el.get_attribute("href") or ""
+            link_el = card.query_selector("a.card, a")
+            href = link_el.get_attribute("href") if link_el else ""
             full_url = f"{self.base_url}{href}" if href.startswith("/") else href
             
-            article_el = card.query_selector("article.card") or card
-            qa_id = article_el.get_attribute("data-qa-id")
-            if qa_id:
-                qa_id = qa_id.replace("cc-rs-rs-card_property_", "").replace("cc-rs-rs-card_project_", "")
-            else:
-                match = re.search(r"/(\d+)$", href)
-                qa_id = match.group(1) if match else str(int(time.time() * 1000))
+            qa_id = card.get_attribute("data-qa-id") or ""
+            qa_id = qa_id.replace("cc-rs-rs-card_property_", "").replace("cc-rs-rs-card_project_", "")
                 
             property_id = f"CC-USADO-{qa_id}"
 
+            is_featured = card.evaluate("el => el.classList.contains('detach')")
+
             price_el = card.query_selector(".card__price-big")
             price_raw = price_el.inner_text().strip() if price_el else "N/A"
-            if price_raw == "N/A" or price_raw == "":
-                desde_el = card.query_selector(".card__price--from, .card__desde, span:has-text('Desde')")
-                if desde_el:
-                    price_raw = f"Desde {desde_el.inner_text().strip()}"
             precio_num = self.parse_price(price_raw)
 
-            h3_el = card.query_selector("h3, div.card__location h3")
-            title = h3_el.inner_text().strip() if h3_el else "N/A"
-            
-            loc_el = card.query_selector("h4.card__location-label, .card__location-label")
-            location = loc_el.inner_text().strip() if loc_el else "N/A"
+            title = card.query_selector("h3, .card__title").inner_text().strip() if card.query_selector("h3, .card__title") else "N/A"
+            location = card.query_selector(".card__location-label, h4").inner_text().strip() if card.query_selector(".card__location-label, h4") else "N/A"
 
             specs_els = card.query_selector_all("ciencuadras-specs-results .specs p span")
             specs_texts = [s.inner_text().strip().lower() for s in specs_els]
@@ -153,6 +155,7 @@ class CiencuadrasUsadoScraper(BaseScraper):
                 "garajes": garajes,
                 "url": full_url,
                 "portal": "ciencuadras_usado",
+                "is_featured": is_featured,
                 "fecha_extraccion": datetime.now().isoformat(timespec="seconds"),
             }
             self.process_and_upload(prop_data, property_id)

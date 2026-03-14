@@ -29,6 +29,7 @@ class FincaRaizScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     def scrape_pages(self, page: Page, max_pages: int) -> None:
+        previous_page_ids = set()
         for current_page in range(1, max_pages + 1):
             if current_page == 1:
                 url = f"{self.base_url}{self.listing_path}"
@@ -62,6 +63,22 @@ class FincaRaizScraper(BaseScraper):
                     "No se encontraron inmuebles. Posible fin de paginación."
                 )
                 break
+
+            # --- DETECCIÓN DE FIN DE RESULTADOS ---
+            current_ids = []
+            for card in cards:
+                href_el = card.query_selector("a.lc-data")
+                if href_el:
+                    p_id = self._extract_id(href_el.get_attribute("href") or "")
+                    if p_id:
+                        current_ids.append(p_id)
+            
+            current_ids_set = set(current_ids)
+            if current_page > 1 and current_ids_set and current_ids_set.issubset(previous_page_ids):
+                self.logger.info("Detección de fin de resultados (Duplicate): Finalizando.")
+                break
+            previous_page_ids = current_ids_set
+            # --------------------------------------
 
             self.logger.info(
                 f"Encontrados {len(cards)} inmuebles en página {current_page}"

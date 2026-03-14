@@ -111,6 +111,7 @@ class BancolombiaTu360Scraper(BaseScraper):
         # --- Fase 1: paginación por URL ---
         page_num = 1
         consecutive_empty = 0
+        previous_total_dom = 0
 
         while page_num <= max_pages:
             page_url = f"{url}?page={page_num}"
@@ -134,6 +135,20 @@ class BancolombiaTu360Scraper(BaseScraper):
 
             accepted, total_dom = self._extract_cards_js(page, page_url, start_index=0)
 
+            # --- DETECCIÓN DE FIN DE RESULTADOS ---
+            # Si el total de tarjetas en el DOM no aumenta o son duplicadas de la página anterior
+            current_ids = set()
+            # En Bancolombia, los IDs se procesan dentro de _extract_cards_js, 
+            # pero podemos pre-validar o confiar en el total_dom y accepted.
+            # Sin embargo, para mayor robustez, usaremos el total_dom como señal.
+            if total_dom > 0 and total_dom == previous_total_dom:
+                consecutive_empty += 1
+            else:
+                consecutive_empty = 0
+            
+            previous_total_dom = total_dom
+            # --------------------------------------
+
             self.logger.info(
                 f"  Página {page_num}: +{accepted} nuevos | "
                 f"Cards DOM: {total_dom} | Sesión: {len(self.scraped_data)}"
@@ -144,6 +159,9 @@ class BancolombiaTu360Scraper(BaseScraper):
                 if consecutive_empty >= 3:
                     self.logger.info("  3 páginas vacías consecutivas — fin URL.")
                     break
+            elif consecutive_empty >= 3:
+                self.logger.info("  Contenido repetido detectado — fin URL.")
+                break
             else:
                 consecutive_empty = 0
 

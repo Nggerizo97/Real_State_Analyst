@@ -30,7 +30,7 @@ class MetrocuadradoScraper(BaseScraper):
 
     def scrape_pages(self, page: Page, max_pages: int) -> None:
         base_search_url = f"{self.base_url}/inmuebles/venta/?search=form"
-
+        previous_page_ids = set()
         for current_page in range(1, max_pages + 1):
             if current_page == 1:
                 url = base_search_url
@@ -62,6 +62,25 @@ class MetrocuadradoScraper(BaseScraper):
             if not cards:
                 self.logger.info("No se encontraron tarjetas o redirigido a CAPTCHA. Fin de paginación.")
                 break
+
+            # --- DETECCIÓN DE FIN DE RESULTADOS ---
+            # Si todas las tarjetas de esta página ya las vimos en la anterior,
+            # Metrocuadrado nos está mostrando el fallback de "Destacados" o repitiendo.
+            current_ids = []
+            for card in cards:
+                href = card.query_selector("a[href]")
+                if href:
+                    p_id = self._extract_id(href.get_attribute("href") or "")
+                    if p_id:
+                        current_ids.append(p_id)
+            
+            current_ids_set = set(current_ids)
+            if current_page > 1 and current_ids_set and current_ids_set.issubset(previous_page_ids):
+                self.logger.info("Detección de fin de resultados: La página no contiene inmuebles nuevos. Finalizando.")
+                break
+            
+            previous_page_ids = current_ids_set
+            # --------------------------------------
 
             self.logger.info(
                 f"Encontradas {len(cards)} tarjetas en página {current_page}"

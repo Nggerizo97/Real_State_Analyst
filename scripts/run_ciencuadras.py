@@ -23,7 +23,7 @@ def main() -> None:
         description="Scraper — Ciencuadras",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--pages", type=int, default=500, help="Máximo de páginas a recorrer por filtro.")
+    parser.add_argument("--pages", type=int, default=999, help="Máximo de páginas a recorrer por filtro.")
     parser.add_argument("--headed", action="store_true", help="Abre el navegador visualmente.")
     parser.add_argument("--show", action="store_true", help="Imprime registros en consola al finalizar.")
     args = parser.parse_args()

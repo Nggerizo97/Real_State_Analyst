@@ -24,6 +24,7 @@ class MercadoLibreScraper(BaseScraper):
 
     def scrape_pages(self, page: Page, max_pages: int) -> None:
         base_url = f"{self.base_url}/inmuebles/venta/_NoIndex_True"
+        previous_page_ids = set()
 
         for current_page in range(1, max_pages + 1):
             if current_page == 1:
@@ -51,6 +52,23 @@ class MercadoLibreScraper(BaseScraper):
             if not items:
                 self.logger.info("Sin resultados o redirigido a CAPTCHA. Deteniendo paginación.")
                 break
+
+            # --- DETECCIÓN DE FIN DE RESULTADOS ---
+            current_ids = []
+            for item in items:
+                link_el = item.query_selector("a.poly-component__title")
+                if link_el:
+                    href = link_el.get_attribute("href") or ""
+                    p_id = self._extract_id(href)
+                    if p_id:
+                        current_ids.append(p_id)
+            
+            current_ids_set = set(current_ids)
+            if current_page > 1 and current_ids_set and current_ids_set.issubset(previous_page_ids):
+                self.logger.info("Detección de fin de resultados (Duplicate): Finalizando.")
+                break
+            previous_page_ids = current_ids_set
+            # --------------------------------------
 
             self.logger.info(
                 f"Encontrados {len(items)} inmuebles en página {current_page}"

@@ -10,10 +10,9 @@ class ProperatiScraper(BaseScraper):
         self.base_url = PORTALS_CONFIG[self.portal_name]["base_url"]
         
     def scrape_pages(self, page: Page, max_pages: int):
+        previous_page_ids = set()
         current_page = 1
-        # Properati URL Estructura
         url = f"{self.base_url}/s/bogota/apartamento/venta"
-        
         while current_page <= max_pages:
             self.logger.info(f"Properati - Navegando a página {current_page}: {url}")
             try:
@@ -29,6 +28,20 @@ class ProperatiScraper(BaseScraper):
             if not items:
                 self.logger.info("No se encontraron más inmuebles, finalizando.")
                 break
+            
+            # --- DETECCIÓN DE FIN DE RESULTADOS ---
+            current_ids = []
+            for item in items:
+                id_attr = item.get_attribute("data-idanuncio")
+                if id_attr:
+                    current_ids.append(id_attr)
+            
+            current_ids_set = set(current_ids)
+            if current_page > 1 and current_ids_set and current_ids_set.issubset(previous_page_ids):
+                self.logger.info("Detección de fin de resultados (Duplicate): Finalizando.")
+                break
+            previous_page_ids = current_ids_set
+            # --------------------------------------
                 
             for item in items:
                 # get url from element

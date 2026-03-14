@@ -24,6 +24,7 @@ class CiencuadrasScraper(BaseScraper):
         for estado, base_search_url in search_urls:
             self.logger.info(f"--- Iniciando extracción para etiqueta CIENCUADRAS: {estado} ---")
             
+            previous_page_ids = set()
             for current_page in range(1, max_pages + 1):
                 url = f"{base_search_url}?page={current_page}"
                 
@@ -53,7 +54,11 @@ class CiencuadrasScraper(BaseScraper):
                 try:
                     page.wait_for_selector("ciencuadras-card, article.card.result", timeout=12_000, state="attached")
                 except:
-                    self.logger.info(f"No se encontraron tarjetas en {estado} pág {current_page}. Fin de paginación.")
+                    # Si no hay tarjetas, revisamos si es por mensaje de "Sin resultados"
+                    if page.query_selector("div.no-results, :has-text('Pronto tendremos un inmueble así')"):
+                        self.logger.info(f"Mensaje de 'Sin resultados' detectado en {estado}. Fin.")
+                    else:
+                        self.logger.info(f"No se encontraron tarjetas en {estado} pág {current_page}. Fin de paginación.")
                     break
 
                 # Capturamos todos los contenedores relevantes
@@ -64,6 +69,24 @@ class CiencuadrasScraper(BaseScraper):
                 if not cards:
                     self.logger.info(f"Lista de tarjetas vacía. Fin de paginación para {estado}.")
                     break
+
+                # --- DETECCIÓN DE FIN DE RESULTADOS (LOOP A PÁGINA 1) ---
+                # Ciencuadras a veces vuelve a la página 1 silenciosamente si el índice es muy alto.
+                current_ids = []
+                for card in cards:
+                    # Obtenemos el ID de forma similar a _extract_property para pre-validar
+                    article_el = card.query_selector("article.card") or card
+                    qa_id = article_el.get_attribute("data-qa-id")
+                    if qa_id:
+                        current_ids.append(qa_id)
+                
+                current_ids_set = set(current_ids)
+                if current_page > 1 and current_ids_set and current_ids_set.issubset(previous_page_ids):
+                    self.logger.info("Detección de fin de resultados (Duplicate/Loop): Finalizando.")
+                    break
+                
+                previous_page_ids = current_ids_set
+                # -------------------------------------------------------
 
                 self.logger.info(f"Encontradas {len(cards)} tarjetas en {estado} página {current_page}")
 

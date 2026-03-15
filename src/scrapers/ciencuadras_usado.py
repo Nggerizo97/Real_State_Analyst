@@ -19,7 +19,7 @@ from src.scrapers.base_scraper import BaseScraper
 class CiencuadrasUsadoScraper(BaseScraper):
 
     _URL_PATH = "/venta"
-    _CARD_SELECTOR = "a.style-none[href^='/inmueble/']"
+    _CARD_SELECTOR = "ciencuadras-card"
 
     def __init__(self):
         super().__init__("ciencuadras_usado")
@@ -134,18 +134,24 @@ class CiencuadrasUsadoScraper(BaseScraper):
     # Esperar tarjetas (Selector ampliado + filtrado Python)
     # ------------------------------------------------------------------
 
-    def _wait_for_cards(self, page: Page, timeout: int = 15_000):
+    def _wait_for_cards(self, page: Page, timeout: int = 20_000):
         try:
-            # Selector genérico
-            page.wait_for_selector("a.style-none", timeout=timeout, state="attached")
-            all_links = page.query_selector_all("a.style-none")
+            # Selector prioritario según inspección real
+            page.wait_for_selector(self._CARD_SELECTOR, timeout=timeout, state="attached")
+            cards = page.query_selector_all(self._CARD_SELECTOR)
             
-            valid_cards = []
-            for link in all_links:
-                href = link.get_attribute("href") or ""
-                if "/inmueble/" in href or "/proyecto-de-vivienda/" in href:
-                    valid_cards.append(link)
-            return valid_cards
+            valid_links = []
+            for card in cards:
+                # Buscamos el link contenedor o interno
+                link = card.query_selector("a.style-none") or card.closest("a.style-none")
+                if not link:
+                    # Fallback: buscar cualquier link interno a proyecto o inmueble
+                    link = card.query_selector("a[href*='/inmueble/'], a[href*='/proyecto-de-vivienda/']")
+                
+                if link:
+                    valid_links.append(link)
+            
+            return valid_links
         except Exception:
             return []
 
@@ -186,8 +192,9 @@ class CiencuadrasUsadoScraper(BaseScraper):
                     f"Reintentando con click numérico..."
                 )
                 target = page_before + 1
+                # Selector robusto: li que contiene el texto de la página
                 target_li = page.query_selector(
-                    f"ul.pagination.desktop li:has(a:text-is('{target}'))"
+                    f"ul.pagination.desktop li:has-text('{target}')"
                 )
                 if target_li:
                     target_li.scroll_into_view_if_needed()

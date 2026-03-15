@@ -1,0 +1,13 @@
+streamlit
+pandas
+numpy
+boto3
+joblib
+plotly
+openai
+playwright
+pyarrow
+s3fs
+python-dotenv
+xgboost
+scikit-learn

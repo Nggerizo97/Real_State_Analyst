@@ -60,7 +60,8 @@ class MetrocuadradoScraper(BaseScraper):
                 self.logger.info("No se encontraron tarjetas o redirigido a CAPTCHA. Fin de paginación.")
                 break
 
-            # --- DETECCIÓN DE FIN DE RESULTADOS ---
+            # --------------------------------------
+            # Registro de progreso e IDs
             current_ids = []
             for card in cards:
                 href_el = card.query_selector("a[href]")
@@ -69,19 +70,18 @@ class MetrocuadradoScraper(BaseScraper):
                     p_id = self._extract_id(href)
                     if p_id:
                         current_ids.append(p_id)
-            
             current_ids_set = set(current_ids)
-            if current_page > 1 and current_ids_set and current_ids_set.issubset(previous_page_ids):
-                self.logger.warning("Detectada repetición de datos (Página Duplicada). Deteniendo.")
-                break
-            
-            previous_page_ids = current_ids_set
-            # --------------------------------------
 
             self.logger.info(f"Encontradas {len(cards)} tarjetas en página {current_page}")
-
+            
+            new_count = 0
             for card in cards:
-                self._extract_property(card, page)
+                if self._extract_property(card, page):
+                    new_count += 1
+            
+            self.logger.info(f"Resultados de página {current_page}: {new_count} nuevos/actualizados.")
+            previous_page_ids = current_ids_set
+            # --------------------------------------
 
     # ------------------------------------------------------------------
     # Scroll para disparar lazy-loading
@@ -159,10 +159,11 @@ class MetrocuadradoScraper(BaseScraper):
                 "fecha_extraccion": datetime.now().isoformat(timespec="seconds"),
             }
 
-            self.process_and_upload(prop_data, f"MC-{property_id}")
+            return self.process_and_upload(prop_data, f"MC-{property_id}")
 
         except Exception as e:
             self.logger.error(f"Error parseando tarjeta: {e}")
+            return False
 
     # ------------------------------------------------------------------
     # Specs: Shadow DOM

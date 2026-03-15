@@ -247,18 +247,23 @@ class BaseScraper(ABC):
     def human_delay(
         self, page: Page = None, min_ms: int = 2000, max_ms: int = 5000
     ):
-        """Pausa aleatoria + scroll suave para simular comportamiento humano."""
-        delay = random.randint(min_ms, max_ms)
-        self.logger.debug(f"human_delay → {delay}ms")
+        """Pausa aleatoria + scroll incremental suave para simular comportamiento humano."""
+        delay_ms = random.randint(min_ms, max_ms)
+        self.logger.debug(f"human_delay → {delay_ms}ms")
 
         if page:
             try:
-                page.mouse.wheel(0, random.randint(100, 500))
-                page.wait_for_timeout(delay)
+                # Scroll incremental en lugar de un salto brusco (estilo real)
+                for _ in range(random.randint(2, 5)):
+                    scroll_px = random.randint(150, 400)
+                    page.mouse.wheel(0, scroll_px)
+                    page.wait_for_timeout(random.randint(200, 500))
+                
+                page.wait_for_timeout(delay_ms // 2)
             except Exception:
-                time.sleep(delay / 1000.0)
+                time.sleep(delay_ms / 1000.0)
         else:
-            time.sleep(delay / 1000.0)
+            time.sleep(delay_ms / 1000.0)
 
     # ------------------------------------------------------------------
     # Utilidades

@@ -187,22 +187,23 @@ class CiencuadrasNuevoScraper(BaseScraper):
                 self.logger.warning(
                     f"Click en 'next' no cambió la página "
                     f"(antes={page_before}, después={page_after}). "
-                    f"Reintentando..."
+                    f"Reintentando con click numérico..."
                 )
                 target = page_before + 1
+                # Selector estilo usuario: li:has(a:text-is('N'))
                 target_li = page.query_selector(
                     f"ul.pagination.desktop li:has(a:text-is('{target}'))"
                 )
                 if target_li:
                     target_li.scroll_into_view_if_needed()
-                    page.wait_for_timeout(300)
+                    page.wait_for_timeout(500)
                     target_li.click()
-                    page.wait_for_timeout(4000)
+                    page.wait_for_timeout(5000)
                     page_after = self._get_active_page(page)
 
                 if page_after and page_after <= page_before:
                     self.logger.error(
-                        "Paginación bloqueada — no se pudo avanzar."
+                        "Paginación bloqueada — no se pudo avanzar al número esperado."
                     )
                     return False
 
@@ -273,10 +274,11 @@ class CiencuadrasNuevoScraper(BaseScraper):
                 "fecha_extraccion": datetime.now().isoformat(timespec="seconds"),
             }
 
-            self.process_and_upload(prop_data, f"CC-{property_id}")
+            return self.process_and_upload(prop_data, f"CC-{property_id}")
 
         except Exception as e:
             self.logger.error(f"Error parseando tarjeta: {e}")
+            return False
 
     # ------------------------------------------------------------------
     # Specs: área, habitaciones, baños, garajes

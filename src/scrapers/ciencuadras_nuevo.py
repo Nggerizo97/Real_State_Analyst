@@ -120,11 +120,59 @@ class CiencuadrasNuevoScraper(BaseScraper):
     # Paginación — click en flecha "next"
     # ------------------------------------------------------------------
 
+    def _dismiss_overlays(self, page: Page) -> None:
+        """
+        Cierra popups/overlays que puedan interceptar clicks de paginación.
+        Actualmente maneja: Survicate survey widget.
+        """
+        # 1. Intentar cerrar el widget de Survicate via botón de cierre
+        close_selectors = [
+            "[class*='survicate'] [class*='close']",
+            "[class*='survicate'] button[aria-label*='close' i]",
+            "[class*='survicate'] button[aria-label*='cerrar' i]",
+            "#survicate-box button",
+        ]
+        for sel in close_selectors:
+            try:
+                btn = page.query_selector(sel)
+                if btn and btn.is_visible():
+                    btn.click(timeout=3000)
+                    self.logger.info(f"Overlay cerrado via botón: {sel}")
+                    page.wait_for_timeout(500)
+                    return
+            except Exception:
+                continue
+
+        # 2. Si no hay botón de cierre, remover el overlay del DOM directamente
+        try:
+            removed = page.evaluate("""
+                () => {
+                    const targets = [
+                        document.getElementById('survicate-box'),
+                        ...document.querySelectorAll('[class*="survicate"]'),
+                        ...document.querySelectorAll('[id*="survicate"]'),
+                    ];
+                    let count = 0;
+                    for (const el of targets) {
+                        if (el) { el.remove(); count++; }
+                    }
+                    return count;
+                }
+            """)
+            if removed:
+                self.logger.info(f"Overlay Survicate removido del DOM ({removed} elementos).")
+                page.wait_for_timeout(300)
+        except Exception as e:
+            self.logger.warning(f"No se pudo remover overlay: {e}")
+
     def _click_next(self, page: Page, current_page: int) -> bool:
         page_before = self._get_active_page(page)
 
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
+
+        # Cerrar cualquier overlay antes de intentar el click
+        self._dismiss_overlays(page)
 
         following = page.query_selector("li.following")
         if not following:
@@ -141,7 +189,11 @@ class CiencuadrasNuevoScraper(BaseScraper):
         try:
             following.scroll_into_view_if_needed()
             page.wait_for_timeout(500)
-            following.click()
+
+            # Segundo dismiss justo antes del click (el overlay puede reaparecer)
+            self._dismiss_overlays(page)
+
+            following.click(timeout=10_000)
             page.wait_for_timeout(4000)
 
             page_after = self._get_active_page(page)
@@ -152,8 +204,8 @@ class CiencuadrasNuevoScraper(BaseScraper):
                 if target_li:
                     target_li.scroll_into_view_if_needed()
                     page.wait_for_timeout(500)
-                    target_li.click()
-                    page.wait_for_timeout(5000)
+                    self._dismiss_overlays(page)
+                    target_li.click(timeout=10_000)
                     page_after = self._get_active_page(page)
 
                 if page_after and page_after <= page_before:

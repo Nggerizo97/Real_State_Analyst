@@ -4,13 +4,13 @@ src/scrapers/base_scraper.py
 Clase Base Abstracta para todos los scrapers de Real Estate.
 Define el patrón Factory/Strategy para estandarizar la extracción.
 
-Flujo:
-  1. Carga hashes históricos desde S3 (deduplicación SCD Type 2).
-  2. Lanza Playwright con stealth, UA randomizado, locale es-CO.
-  3. Delega a scrape_pages() (método abstracto de cada spider).
-  4. Sube batch Parquet + actualiza hash index en S3.
+Híbrido Resiliente:
+  - Guarda en CSV local (data/batches/) cada 10 páginas.
+  - Sube batch Parquet final a S3 al terminar.
+  - Sincroniza hashes SCD Type 2 con S3.
 """
 
+import csv
 import hashlib
 import os
 import random
@@ -18,6 +18,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Set
 
 import pandas as pd
@@ -28,11 +29,29 @@ from src.utils.logger import get_logger
 from src.utils.s3_connector import S3Connector
 
 # ---------------------------------------------------------------------------
-# User-Agents (Fijado a Chrome 122 para match exacto con Sec-Ch-Ua headers)
+# Configuración de Resiliencia Local
+# ---------------------------------------------------------------------------
+ROOT_DATA_DIR = Path("data")
+BATCHES_DIR = ROOT_DATA_DIR / "batches"
+LOCAL_HASHES_DIR = ROOT_DATA_DIR / "hashes"
+
+FLUSH_EVERY = 10  # Páginas entre flushes a disco local
+
+# Campos del CSV — orden fijo para compatibilidad
+CSV_FIELDS = [
+    "id_inmueble", "titulo", "tipo_inmueble",
+    "precio", "precio_num", "ubicacion",
+    "habitaciones", "banos", "area", "garajes",
+    "url", "portal", "fecha_extraccion",
+]
+
+# ---------------------------------------------------------------------------
+# User-Agents (randomizados para mayor sigilo)
 # ---------------------------------------------------------------------------
 _USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
 ]
 
 # ---------------------------------------------------------------------------
@@ -83,7 +102,7 @@ _STEALTH_SCRIPT = """
 class BaseScraper(ABC):
     """
     Clase Base Abstracta para todos los scrapers de Real Estate.
-    Maneja: S3 upload (Parquet), hash dedup (SCD Type 2), stealth browser.
+    Maneja: Persistencia Híbrida (CSV Local Buffer -> S3 Parquet).
     """
 
     def __init__(self, portal_name: str):
@@ -92,31 +111,46 @@ class BaseScraper(ABC):
         self.logger = get_logger(self.__class__.__name__)
         self.prefix = f"{S3_BRONZE_PREFIX}/{self.portal_name}"
 
+        # Estado en RAM
         self.scraped_data: List[Dict[str, Any]] = []
+        self.total_processed_in_run: List[Dict[str, Any]] = [] # Para el Parquet final
+        
+        # Hashes (SCD Type 2)
         self.hash_index_key = f"{self.prefix}/_hash_index.txt"
         self.historical_hashes: Set[str] = set()
+
+        # Directorios locales
+        self.batches_dir = BATCHES_DIR / portal_name
+        self.batches_dir.mkdir(parents=True, exist_ok=True)
+        LOCAL_HASHES_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Manejo de archivos
+        self._csv_path: Path | None = None
+        self._csv_file = None
+        self._csv_writer = None
+        self._pages_since_flush = 0
 
     # ------------------------------------------------------------------
     # Ciclo de vida principal
     # ------------------------------------------------------------------
 
     def run(self, max_pages: int = 5, headless: bool = True):
-        """
-        Ciclo de vida principal del scraper.
-
-        Args:
-            max_pages: Máximo de páginas / clicks por listado.
-            headless:  False → abre ventana visible del navegador (debug).
-        """
         self.logger.info(f"{'=' * 60}")
         self.logger.info(f"  Iniciando scraper: {self.portal_name}")
         self.logger.info(f"{'=' * 60}")
 
-        # 1. Cargar hashes previos desde S3
-        self.logger.info("Descargando memoria de hashes previa de S3...")
-        self.historical_hashes = self.s3.download_hash_index(self.hash_index_key)
-        self.logger.info(f"Cargados {len(self.historical_hashes)} hashes históricos.")
+        # 1. Cargar hashes (Prioridad S3, fallback Local)
+        self._load_hashes()
 
+        # 2. Preparar CSV local
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self._csv_path = self.batches_dir / f"{self.portal_name}_{timestamp}.csv"
+        self._csv_file = open(self._csv_path, "w", newline="", encoding="utf-8")
+        self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        self._csv_writer.writeheader()
+        self.logger.info(f"Local Buffer: {self._csv_path}")
+
+        # 3. Lanzar browser
         ua = random.choice(_USER_AGENTS)
         width = random.choice([1280, 1366, 1440, 1920])
         height = random.choice([768, 800, 900, 1080])
@@ -146,133 +180,137 @@ class BaseScraper(ABC):
                     "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
                     "Sec-Ch-Ua-Mobile": "?0",
                     "Sec-Ch-Ua-Platform": '"Windows"',
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Sec-Fetch-User": "?1",
-                    "Upgrade-Insecure-Requests": "1",
-                    "Sec-Fetch-User": "?1"
                 },
             )
             
             page = context.new_page()
             page.add_init_script(_STEALTH_SCRIPT)
 
-            self.logger.info(
-                f"Browser lanzado | UA=...{ua[-40:]} | viewport={width}x{height}"
-            )
+            self.logger.info(f"Browser lanzado | UA=...{ua[-40:]}")
 
             try:
                 self.scrape_pages(page, max_pages)
             except Exception as e:
-                self.logger.error(
-                    f"Error crítico durante el Scraping de {self.portal_name}: {e}"
-                )
+                self.logger.error(f"Error crítico en {self.portal_name}: {e}")
             finally:
                 context.close()
                 browser.close()
 
-        # 2. Subir resultados a S3
-        if self.scraped_data:
-            self.logger.info(
-                f"Preparando conversión a Parquet de "
-                f"{len(self.scraped_data)} nuevos inmuebles/actualizaciones..."
-            )
-            df = pd.DataFrame(self.scraped_data)
+        # 4. Finalizar persistencia
+        self._finalize_run()
 
+    def _load_hashes(self):
+        self.logger.info("Cargando memoria de hashes...")
+        try:
+            self.historical_hashes = self.s3.download_hash_index(self.hash_index_key)
+        except Exception as e:
+            self.logger.warning(f"No se pudo cargar hashes de S3: {e}. Usando fallback local...")
+            local_path = LOCAL_HASHES_DIR / f"{self.portal_name}_hash_index.txt"
+            if local_path.exists():
+                with open(local_path, "r") as f:
+                    self.historical_hashes = set(line.strip() for line in f if line.strip())
+        
+        self.logger.info(f"Total hashes cargados: {len(self.historical_hashes)}")
+
+    def _finalize_run(self):
+        # Flush final a CSV
+        self._flush_to_csv()
+        if self._csv_file:
+            self._csv_file.close()
+
+        # Guardar hashes localmente (por si S3 falla tras el run)
+        self._save_hashes_local()
+
+        # Subir a S3 si hay data
+        if self.total_processed_in_run:
+            self.logger.info(f"Subiendo batch Parquet ({len(self.total_processed_in_run)} regs) a S3...")
+            df = pd.DataFrame(self.total_processed_in_run)
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            parquet_key = (
-                f"{self.prefix}/batches/{self.portal_name}_{timestamp}.parquet"
-            )
-
+            parquet_key = f"{self.prefix}/batches/{self.portal_name}_{timestamp}.parquet"
+            
             if self.s3.upload_parquet(parquet_key, df):
-                self.logger.info(f"Subida masiva exitosa a S3: {parquet_key}")
-                self.logger.info("Actualizando índice de Hashes Maestro...")
-                self.s3.upload_hash_index(
-                    self.hash_index_key, self.historical_hashes
-                )
+                self.logger.info("Batch Parquet subido exitosamente.")
+                self.logger.info("Actualizando índice de hashes en S3...")
+                self.s3.upload_hash_index(self.hash_index_key, self.historical_hashes)
             else:
-                self.logger.error(
-                    "Fallo al subir el batch Parquet a S3. "
-                    "Los hashes no se actualizarán."
-                )
-        else:
-            self.logger.info("No hay inmuebles nuevos o cambios de precio para subir.")
-
+                self.logger.error("Fallo al subir Parquet a S3.")
+        
         self.logger.info(f"Ingesta finalizada para {self.portal_name}")
 
+    def _save_hashes_local(self):
+        local_path = LOCAL_HASHES_DIR / f"{self.portal_name}_hash_index.txt"
+        with open(local_path, "w") as f:
+            for h in self.historical_hashes:
+                f.write(h + "\n")
+        self.logger.debug(f"Hashes locales guardados en {local_path}")
+
     # ------------------------------------------------------------------
-    # Método abstracto
+    # Gestión de Flushes (Llamar desde el spider cada página)
+    # ------------------------------------------------------------------
+
+    def on_page_done(self):
+        """Llamar al terminar cada página para gestión de resiliencia."""
+        self._pages_since_flush += 1
+        if self._pages_since_flush >= FLUSH_EVERY:
+            self._flush_to_csv()
+            self._save_hashes_local()
+            self._pages_since_flush = 0
+
+    def _flush_to_csv(self):
+        if not self.scraped_data or not self._csv_writer:
+            return
+        
+        self.logger.info(f"Flush parcial discu: {len(self.scraped_data)} registros.")
+        for row in self.scraped_data:
+            self._csv_writer.writerow(row)
+            self.total_processed_in_run.append(row)
+        
+        self._csv_file.flush()
+        self.scraped_data.clear()
+
+    # ------------------------------------------------------------------
+    # Lógica de scraping
     # ------------------------------------------------------------------
 
     @abstractmethod
     def scrape_pages(self, page: Page, max_pages: int):
-        """
-        Lógica de navegación y extracción específica del portal.
-        Debe llamar a self.process_and_upload() por cada inmueble.
-        """
         pass
 
-    # ------------------------------------------------------------------
-    # Deduplicación SCD Type 2
-    # ------------------------------------------------------------------
-
-    def process_and_upload(
-        self, property_data: Dict[str, Any], property_id: str
-    ) -> bool:
-        """
-        Valida deduplicación en RAM y acumula el registro.
-        SCD Type 2: si el precio cambia → hash diferente → actualización.
-        """
+    def process_and_upload(self, property_data: Dict[str, Any], property_id: str) -> bool:
         precio = property_data.get("precio_num", 0)
         unique_string = f"{property_id}_{precio}"
         price_hash = hashlib.md5(unique_string.encode("utf-8")).hexdigest()[:10]
         id_hash = f"{property_id}_{price_hash}"
 
         if id_hash in self.historical_hashes:
-            self.logger.debug(
-                f"[SKIP] {property_id} — sin cambios de precio (SCD Type 2)."
-            )
+            self.logger.debug(f"[SKIP] {property_id} — SCD Type 2 activo.")
             return False
 
         self.historical_hashes.add(id_hash)
         self.scraped_data.append(property_data)
-        self.logger.info(f"[NEW] {property_id} agregado al batch.")
+        self.logger.info(f"[NEW] {property_id} agregado al buffer.")
         return True
 
     # ------------------------------------------------------------------
     # Comportamiento humano
     # ------------------------------------------------------------------
 
-    def human_delay(
-        self, page: Page = None, min_ms: int = 2000, max_ms: int = 5000
-    ):
-        """Pausa aleatoria + scroll incremental suave para simular comportamiento humano."""
+    def human_delay(self, page: Page = None, min_ms: int = 2000, max_ms: int = 5000):
         delay_ms = random.randint(min_ms, max_ms)
-        self.logger.debug(f"human_delay → {delay_ms}ms")
-
         if page:
             try:
-                # Scroll incremental en lugar de un salto brusco (estilo real)
                 for _ in range(random.randint(2, 5)):
                     scroll_px = random.randint(150, 400)
                     page.mouse.wheel(0, scroll_px)
                     page.wait_for_timeout(random.randint(200, 500))
-                
                 page.wait_for_timeout(delay_ms // 2)
             except Exception:
                 time.sleep(delay_ms / 1000.0)
         else:
             time.sleep(delay_ms / 1000.0)
 
-    # ------------------------------------------------------------------
-    # Utilidades
-    # ------------------------------------------------------------------
-
     @staticmethod
     def parse_price(raw: str) -> int:
-        """Extrae el valor numérico de un string de precio (COP)."""
-        if not raw:
-            return 0
+        if not raw: return 0
         digits = re.sub(r"[^\d]", "", str(raw))
         return int(digits) if digits else 0

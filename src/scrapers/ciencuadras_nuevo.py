@@ -1,20 +1,18 @@
 """
-Scraper de proyectos de vivienda NUEVA — CienCuadras Colombia.
+src/scrapers/ciencuadras_nuevo.py
+=================================
+Spider para proyectos de vivienda NUEVA — CienCuadras Colombia.
 
-URL: https://www.ciencuadras.com/proyectos-vivienda-nueva
-Paginación: click en flecha "next" (li.following). ~24 tarjetas por página.
-Verificación de página activa para evitar loops infinitos.
+Híbrido Resiliente:
+  - Llama a self.on_page_done() cada página → flush local cada 10.
+  - Sincroniza con S3 al finalizar (BaseScraper lifecycle).
 """
 
 import re
-import time
 from datetime import datetime
-
 from playwright.sync_api import Page
-
 from config.settings import PORTALS_CONFIG
 from src.scrapers.base_scraper import BaseScraper
-
 
 class CiencuadrasNuevoScraper(BaseScraper):
 
@@ -45,10 +43,10 @@ class CiencuadrasNuevoScraper(BaseScraper):
                 self.logger.warning(f"Intento {attempt + 1} falló (goto): {e}")
                 page.wait_for_timeout(2000)
         else:
-            self.logger.error(f"No se pudo cargar {url} después de 3 intentos.")
+            self.logger.error(f"No se pudo cargar {url} tras 3 intentos.")
             return
 
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(3000)
         self._scrape_pages(page, max_pages)
 
     # ------------------------------------------------------------------
@@ -58,70 +56,62 @@ class CiencuadrasNuevoScraper(BaseScraper):
     def _scrape_pages(self, page: Page, max_pages: int) -> None:
         for current_page in range(1, max_pages + 1):
             self.logger.info(f"CC-Nuevo — Página {current_page}/{max_pages}")
-            
-            # Delay humano inicial como en la versión que funciona
+
             self.human_delay(page, 2000, 4000)
 
-            # Scroll profundo para asegurar carga
-            self._scroll_to_load(page)
-
-            # B. Espera y detección robocusta
-            cards = []
-            self.human_delay(page, 2000, 4000)
-            
-            # 1. Esperar a que los esqueletos desaparezcan (visto en debug screenshot)
+            # Esperar a que los skeleton loaders desaparezcan
             try:
-                self.logger.info("Esperando a que desaparezcan los skeleton loaders...")
-                page.wait_for_selector(".p-skeleton", state="detached", timeout=20000)
-            except:
-                self.logger.warning("Skeleton loaders persistieron o no se detectaron, procediendo...")
+                page.wait_for_selector(".p-skeleton", state="detached", timeout=20_000)
+            except Exception:
+                self.logger.warning("Skeleton loaders persistieron — procediendo...")
 
             self._scroll_to_load(page)
 
-            cards = self._wait_for_cards(page)
+            # Detección de tarjetas con reintentos
+            cards = self._wait_for_cards_with_retries(page, current_page)
             if not cards:
-                self.logger.warning(f"Página {current_page} no muestra tarjetas aún, reintentando...")
-                page.wait_for_timeout(7000)
-                cards = self._wait_for_cards(page)
-                if not cards:
-                    self.logger.error("No se encontraron tarjetas. Terminando ciclo.")
-                    break
+                self.logger.error(f"Página {current_page} persistió vacía — fin del scraping.")
+                break
 
             self.logger.info(f"Encontradas {len(cards)} tarjetas en página {current_page}")
 
+            nuevos = 0
             for card_link in cards:
-                self._extract_property(card_link)
+                if self._extract_property(card_link):
+                    nuevos += 1
 
-            # Paginación
+            self.logger.info(f"Resultados p{current_page}: {nuevos} nuevos/actualizados.")
+
+            # Flush periódico
+            self.on_page_done()
+
             if current_page < max_pages:
-                self.logger.info(f"Buscando 'Siguiente' para saltar a página {current_page + 1}...")
                 if not self._click_next(page, current_page):
-                    self.logger.info("No se encontró botón 'Siguiente' o está oculto. Fin.")
+                    self.logger.info("Fin de paginación natural.")
                     break
             else:
                 self.logger.info(f"Límite {max_pages} alcanzado.")
-                break
 
-    # ------------------------------------------------------------------
-    # Scroll para lazy-loading (idéntico al del usuario)
-    # ------------------------------------------------------------------
+    def _wait_for_cards_with_retries(self, page: Page, current_page: int, max_retries: int = 3):
+        for attempt in range(1, max_retries + 1):
+            cards = self._wait_for_cards(page)
+            if cards:
+                return cards
+            if attempt < max_retries:
+                self.logger.info(f"Detección vacía p{current_page}, reintentando {attempt}/{max_retries - 1}...")
+                page.wait_for_timeout(7000)
+        return []
 
     def _scroll_to_load(self, page: Page, max_scrolls: int = 10) -> None:
         for _ in range(max_scrolls):
             page.evaluate("window.scrollBy(0, 800)")
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(400)
         page.evaluate("window.scrollTo(0, 0)")
-        page.wait_for_timeout(500)
-
-    # ------------------------------------------------------------------
-    # Esperar tarjetas
-    # ------------------------------------------------------------------
+        page.wait_for_timeout(400)
 
     def _wait_for_cards(self, page: Page, timeout: int = 15_000):
         try:
-            page.wait_for_selector(
-                self._CARD_SELECTOR, timeout=timeout, state="attached"
-            )
+            page.wait_for_selector(self._CARD_SELECTOR, timeout=timeout, state="attached")
             return page.query_selector_all(self._CARD_SELECTOR)
         except Exception:
             return []
@@ -133,13 +123,11 @@ class CiencuadrasNuevoScraper(BaseScraper):
     def _click_next(self, page: Page, current_page: int) -> bool:
         page_before = self._get_active_page(page)
 
-        # Asegurar scroll al footer para que el botón sea visible
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
         following = page.query_selector("li.following")
         if not following:
-            # Reintento con scroll parcial (por si el footer es dinámico)
             page.evaluate("window.scrollBy(0, -400)")
             page.wait_for_timeout(1000)
             following = page.query_selector("li.following")
@@ -158,14 +146,9 @@ class CiencuadrasNuevoScraper(BaseScraper):
 
             page_after = self._get_active_page(page)
             if page_before and page_after and page_after <= page_before:
-                self.logger.warning(
-                    f"Click en 'next' no cambió la página (antes={page_before}, después={page_after}). Reintentando con click numérico..."
-                )
+                self.logger.warning(f"Click en 'next' no avanzó (p{page_before}). Reintentando click numérico...")
                 target = page_before + 1
-                # Selector que le funciona al usuario
-                target_li = page.query_selector(
-                    f"ul.pagination.desktop li:has(a:text-is('{target}'))"
-                )
+                target_li = page.query_selector(f"ul.pagination.desktop li:has(a:text-is('{target}'))")
                 if target_li:
                     target_li.scroll_into_view_if_needed()
                     page.wait_for_timeout(500)
@@ -174,14 +157,13 @@ class CiencuadrasNuevoScraper(BaseScraper):
                     page_after = self._get_active_page(page)
 
                 if page_after and page_after <= page_before:
-                    self.logger.error("Paginación bloqueada.")
                     return False
 
             page.evaluate("window.scrollTo(0, 0)")
             page.wait_for_timeout(500)
             return True
         except Exception as e:
-            self.logger.error(f"Error al hacer click en 'next': {e}")
+            self.logger.error(f"Error en click 'next': {e}")
             return False
 
     @staticmethod
@@ -190,7 +172,7 @@ class CiencuadrasNuevoScraper(BaseScraper):
         if active:
             try:
                 return int(active.inner_text().strip())
-            except ValueError:
+            except:
                 pass
         return 0
 
@@ -198,19 +180,16 @@ class CiencuadrasNuevoScraper(BaseScraper):
     # Extracción de datos por tarjeta
     # ------------------------------------------------------------------
 
-    def _extract_property(self, card_link) -> None:
+    def _extract_property(self, card_link) -> bool:
         try:
             href = card_link.get_attribute("href") or ""
-            if not href:
-                return
+            if not href: return False
 
             article = card_link.query_selector("article.card")
-            if not article:
-                return
+            if not article: return False
 
             property_id = self._extract_id(article)
-            if not property_id:
-                return
+            if not property_id: return False
 
             price_el = article.query_selector("span.card__price-big")
             price_raw = price_el.inner_text().strip() if price_el else "N/A"
@@ -218,14 +197,12 @@ class CiencuadrasNuevoScraper(BaseScraper):
 
             h3_el = article.query_selector("div.card__location h3")
             type_raw = h3_el.inner_text().strip() if h3_el else "N/A"
-            property_type = "Proyecto Nuevo"
+            property_type = self._parse_type(type_raw)
 
             loc_el = article.query_selector("h4.card__location-label")
             location = loc_el.inner_text().strip() if loc_el else "N/A"
 
             area, habitaciones, banos, garajes = self._extract_specs(article)
-
-            full_url = f"{self.base_url}{href}"
 
             prop_data = {
                 "id_inmueble": f"CC-{property_id}",
@@ -238,49 +215,36 @@ class CiencuadrasNuevoScraper(BaseScraper):
                 "banos": banos,
                 "area": area,
                 "garajes": garajes,
-                "url": full_url,
+                "url": f"{self.base_url}{href}",
                 "portal": self.portal_name,
                 "fecha_extraccion": datetime.now().isoformat(timespec="seconds"),
             }
 
-            self.process_and_upload(prop_data, f"CC-{property_id}")
-
+            return self.process_and_upload(prop_data, f"CC-{property_id}")
         except Exception as e:
             self.logger.error(f"Error parseando tarjeta: {e}")
-
-    # ------------------------------------------------------------------
-    # Specs: área, habitaciones, baños, garajes
-    # ------------------------------------------------------------------
+            return False
 
     @staticmethod
     def _extract_specs(article) -> tuple:
-        area = ""
-        habitaciones = ""
-        banos = ""
-        garajes = ""
-
-        spans = article.query_selector_all(
-            "ciencuadras-specs-results .specs p span"
-        )
+        area = habitaciones = banos = garajes = ""
+        spans = article.query_selector_all("ciencuadras-specs-results .specs p span")
         for span in spans:
             text = span.inner_text().strip()
-            if "m2" in text.lower() or "m²" in text.lower():
-                area = text
-            elif "habit" in text.lower():
-                habitaciones = text
-            elif "baño" in text.lower():
-                banos = text
-            elif "garaje" in text.lower() or "gar" in text.lower():
-                garajes = text
-
+            lower = text.lower()
+            if "m2" in lower or "m²" in lower: area = text
+            elif "habit" in lower: habitaciones = text
+            elif "baño" in lower: banos = text
+            elif "garaje" in lower or "gar" in lower: garajes = text
         return area, habitaciones, banos, garajes
-
-    # ------------------------------------------------------------------
-    # Utilidades
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_id(article) -> str:
         qa = article.get_attribute("data-qa-id") or ""
         m = re.search(r"(\d+)$", qa)
         return m.group(1) if m else ""
+
+    @staticmethod
+    def _parse_type(type_raw: str) -> str:
+        m = re.match(r"^(\S+)\s+[Ee]n\s+", type_raw)
+        return m.group(1) if m else type_raw

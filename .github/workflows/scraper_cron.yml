@@ -19,47 +19,10 @@ on:
         default: 'false'
 
 jobs:
-  # Job opcional para limpiar checkpoints antes de un run forzado
-  clear-checkpoints:
-    name: Clear checkpoints (if requested)
-    runs-on: ubuntu-22.04
-    if: ${{ github.event.inputs.clear_checkpoints == 'true' }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: pip install boto3
-
-      - name: Clear all scraper checkpoints
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
-          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
-        run: |
-          python - <<'EOF'
-          import boto3, os
-          s3 = boto3.client('s3')
-          bucket = os.environ['S3_BUCKET_NAME']
-          resp = s3.list_objects_v2(Bucket=bucket, Prefix='checkpoints/')
-          for obj in resp.get('Contents', []):
-              s3.delete_object(Bucket=bucket, Key=obj['Key'])
-              print(f"Deleted: {obj['Key']}")
-          print("All checkpoints cleared.")
-          EOF
-
   scrape:
     name: "Scrape ${{ matrix.scraper }}"
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-    needs: [clear-checkpoints]
     if: always()
     strategy:
       fail-fast: false
@@ -89,6 +52,28 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
+
+      - name: "Clear specific checkpoint (if requested)"
+        if: ${{ github.event.inputs.clear_checkpoints == 'true' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+        run: |
+          python - <<'EOF'
+          import boto3, os
+          s3 = boto3.client('s3')
+          bucket = os.environ['S3_BUCKET_NAME']
+          key = f"checkpoints/${{ matrix.scraper }}.json"
+          try:
+              s3.delete_object(Bucket=bucket, Key=key)
+              print(f"Deleted checkpoint: {key}")
+          except s3.exceptions.NoSuchKey:
+              print(f"No checkpoint found for: {key}")
+          except Exception as e:
+              print(f"Error clearing checkpoint: {e}")
+          EOF
 
       - name: Install dependencies
         run: |

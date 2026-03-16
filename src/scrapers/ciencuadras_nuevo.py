@@ -19,7 +19,7 @@ from src.scrapers.base_scraper import BaseScraper
 class CiencuadrasNuevoScraper(BaseScraper):
 
     _URL_PATH = "/proyectos-vivienda-nueva"
-    _CARD_SELECTOR = "ciencuadras-card"
+    _CARD_SELECTOR = "a.style-none[href^='/proyecto-de-vivienda/']"
 
     def __init__(self):
         super().__init__("ciencuadras_nuevo")
@@ -39,17 +39,16 @@ class CiencuadrasNuevoScraper(BaseScraper):
 
         for attempt in range(3):
             try:
-                # networkidle es clave para que Angular termine de pintar
-                page.goto(url, timeout=90_000, wait_until="networkidle")
-                page.wait_for_timeout(5000)
+                page.goto(url, timeout=60_000, wait_until="domcontentloaded")
                 break
             except Exception as e:
                 self.logger.warning(f"Intento {attempt + 1} falló (goto): {e}")
-                page.wait_for_timeout(5000)
+                page.wait_for_timeout(2000)
         else:
-            self.logger.error(f"No se pudo cargar {url} tras 3 intentos. Abortando.")
+            self.logger.error(f"No se pudo cargar {url} después de 3 intentos.")
             return
 
+        page.wait_for_timeout(5000)
         self._scrape_pages(page, max_pages)
 
     # ------------------------------------------------------------------
@@ -60,100 +59,70 @@ class CiencuadrasNuevoScraper(BaseScraper):
         for current_page in range(1, max_pages + 1):
             self.logger.info(f"CC-Nuevo — Página {current_page}/{max_pages}")
             
-            # A. Asegurar que estamos en la página correcta (marker de UI)
-            # Damos 10s para que la UI marque la página actual como la activa
-            try:
-                page.wait_for_function(
-                    f"() => {{ const el = document.querySelector('ul.pagination.desktop li.active'); return el && el.innerText.trim() === '{current_page}'; }}",
-                    timeout=10000
-                )
-            except Exception:
-                self.logger.warning(f"La UI no marcó la página {current_page} como activa, procediendo con cautela.")
+            # Delay humano inicial como en la versión que funciona
+            self.human_delay(page, 2000, 4000)
 
-            # B. Reintentos si no hay tarjetas
+            # Scroll profundo para asegurar carga
+            self._scroll_to_load(page)
+
+            # B. Espera y detección robocusta
             cards = []
-            for retry in range(3):
-                # Esperar a que desaparezcan los esqueletos de carga (p-skeleton)
-                try:
-                    page.wait_for_selector(".p-skeleton", state="detached", timeout=10000)
-                except:
-                    pass
-                
-                self._scroll_to_load(page)
+            self.human_delay(page, 2000, 4000)
+            
+            # 1. Esperar a que los esqueletos desaparezcan (visto en debug screenshot)
+            try:
+                self.logger.info("Esperando a que desaparezcan los skeleton loaders...")
+                page.wait_for_selector(".p-skeleton", state="detached", timeout=20000)
+            except:
+                self.logger.warning("Skeleton loaders persistieron o no se detectaron, procediendo...")
+
+            self._scroll_to_load(page)
+
+            cards = self._wait_for_cards(page)
+            if not cards:
+                self.logger.warning(f"Página {current_page} no muestra tarjetas aún, reintentando...")
+                page.wait_for_timeout(7000)
                 cards = self._wait_for_cards(page)
-                if cards:
+                if not cards:
+                    self.logger.error("No se encontraron tarjetas. Terminando ciclo.")
                     break
-                self.logger.info(f"Página {current_page} no muestra tarjetas aún, reintentando detección {retry + 1}/3...")
-                page.wait_for_timeout(5000)
 
-            if cards:
-                self.logger.info(f"Encontradas {len(cards)} tarjetas en página {current_page}")
-                new_count = 0
-                for card_link in cards:
-                    if self._extract_property(card_link):
-                        new_count += 1
-                self.logger.info(f"Resultados de página {current_page}: {new_count} nuevos/actualizados.")
-            else:
-                self.logger.warning(f"Página {current_page} persiste vacía (HTML no cargó tarjetas).")
+            self.logger.info(f"Encontradas {len(cards)} tarjetas en página {current_page}")
 
-            # C. Paginación: Continuar hasta max_pages o hasta fin de web
+            for card_link in cards:
+                self._extract_property(card_link)
+
+            # Paginación
             if current_page < max_pages:
-                self.logger.info(f"Intentando saltar a la página {current_page + 1}...")
-                if self._click_next(page, current_page):
-                    continue
-                else:
-                    self.logger.info("Fin de resultados (Botón 'Siguiente' no disponible).")
+                self.logger.info(f"Buscando 'Siguiente' para saltar a página {current_page + 1}...")
+                if not self._click_next(page, current_page):
+                    self.logger.info("No se encontró botón 'Siguiente' o está oculto. Fin.")
                     break
             else:
                 self.logger.info(f"Límite {max_pages} alcanzado.")
                 break
 
-    def _check_next_exists(self, page: Page) -> bool:
-        """Verifica si existe el botón 'Siguiente' bajando hasta el fondo."""
-        try:
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1000)
-            following = page.query_selector("li.following")
-            if following:
-                cls = following.get_attribute("class") or ""
-                return "hide" not in cls
-        except:
-            pass
-        return False
-
     # ------------------------------------------------------------------
-    # Scroll para lazy-loading
+    # Scroll para lazy-loading (idéntico al del usuario)
     # ------------------------------------------------------------------
 
-    def _scroll_to_load(self, page: Page, max_scrolls: int = 15) -> None:
+    def _scroll_to_load(self, page: Page, max_scrolls: int = 10) -> None:
         for _ in range(max_scrolls):
-            page.evaluate("window.scrollBy(0, 600)")
-            page.wait_for_timeout(300)
+            page.evaluate("window.scrollBy(0, 800)")
+            page.wait_for_timeout(500)
         page.evaluate("window.scrollTo(0, 0)")
         page.wait_for_timeout(500)
 
     # ------------------------------------------------------------------
-    # Esperar tarjetas (Selector ampliado + filtrado Python)
+    # Esperar tarjetas
     # ------------------------------------------------------------------
 
-    def _wait_for_cards(self, page: Page, timeout: int = 20_000):
+    def _wait_for_cards(self, page: Page, timeout: int = 15_000):
         try:
-            # Selector prioritario según inspección real
-            page.wait_for_selector(self._CARD_SELECTOR, timeout=timeout, state="attached")
-            cards = page.query_selector_all(self._CARD_SELECTOR)
-            
-            valid_links = []
-            for card in cards:
-                # Buscamos el link contenedor o interno
-                link = card.query_selector("a.style-none") or card.closest("a.style-none")
-                if not link:
-                    # Fallback: buscar cualquier link dentro que lleve a proyecto o inmueble
-                    link = card.query_selector("a[href*='/proyecto-de-vivienda/'], a[href*='/inmueble/']")
-                
-                if link:
-                    valid_links.append(link)
-            
-            return valid_links
+            page.wait_for_selector(
+                self._CARD_SELECTOR, timeout=timeout, state="attached"
+            )
+            return page.query_selector_all(self._CARD_SELECTOR)
         except Exception:
             return []
 
@@ -164,14 +133,14 @@ class CiencuadrasNuevoScraper(BaseScraper):
     def _click_next(self, page: Page, current_page: int) -> bool:
         page_before = self._get_active_page(page)
 
-        # Asegurar que el footer/paginación cargue
+        # Asegurar scroll al footer para que el botón sea visible
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
 
         following = page.query_selector("li.following")
         if not following:
-            # Reintento de búsqueda de botón con scroll extra
-            page.evaluate("window.scrollBy(0, -500)")
+            # Reintento con scroll parcial (por si el footer es dinámico)
+            page.evaluate("window.scrollBy(0, -400)")
             page.wait_for_timeout(1000)
             following = page.query_selector("li.following")
             if not following:
@@ -190,14 +159,12 @@ class CiencuadrasNuevoScraper(BaseScraper):
             page_after = self._get_active_page(page)
             if page_before and page_after and page_after <= page_before:
                 self.logger.warning(
-                    f"Click en 'next' no cambió la página "
-                    f"(antes={page_before}, después={page_after}). "
-                    f"Reintentando con click numérico..."
+                    f"Click en 'next' no cambió la página (antes={page_before}, después={page_after}). Reintentando con click numérico..."
                 )
                 target = page_before + 1
-                # Selector robusto: li que contiene el texto de la página
+                # Selector que le funciona al usuario
                 target_li = page.query_selector(
-                    f"ul.pagination.desktop li:has-text('{target}')"
+                    f"ul.pagination.desktop li:has(a:text-is('{target}'))"
                 )
                 if target_li:
                     target_li.scroll_into_view_if_needed()
@@ -207,9 +174,7 @@ class CiencuadrasNuevoScraper(BaseScraper):
                     page_after = self._get_active_page(page)
 
                 if page_after and page_after <= page_before:
-                    self.logger.error(
-                        "Paginación bloqueada — no se pudo avanzar al número esperado."
-                    )
+                    self.logger.error("Paginación bloqueada.")
                     return False
 
             page.evaluate("window.scrollTo(0, 0)")
@@ -239,7 +204,6 @@ class CiencuadrasNuevoScraper(BaseScraper):
             if not href:
                 return
 
-            # En "nuevo" el article puede no tener clase "result"
             article = card_link.query_selector("article.card")
             if not article:
                 return
@@ -279,11 +243,10 @@ class CiencuadrasNuevoScraper(BaseScraper):
                 "fecha_extraccion": datetime.now().isoformat(timespec="seconds"),
             }
 
-            return self.process_and_upload(prop_data, f"CC-{property_id}")
+            self.process_and_upload(prop_data, f"CC-{property_id}")
 
         except Exception as e:
             self.logger.error(f"Error parseando tarjeta: {e}")
-            return False
 
     # ------------------------------------------------------------------
     # Specs: área, habitaciones, baños, garajes

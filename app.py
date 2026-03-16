@@ -8,6 +8,7 @@ import plotly.express as px
 from openai import OpenAI
 import json
 import re
+from src.utils.model_loader import ModelLoader
 
 # ==========================================
 # Configuración Principal
@@ -19,20 +20,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Inicializar utilidades de S3 y ML
+model_loader = ModelLoader()
+ml_model, manifest = model_loader.load_latest_model()
+badge = ModelLoader.get_badge_data(manifest)
+
 # Inicializar cliente LLM configurado para Ollama o API compatible
 llm_client = OpenAI(
     base_url=st.secrets.get("llm", {}).get("api_base", "http://localhost:11434/v1"),
-    api_key=st.secrets.get("llm", {}).get("api_key", "ollama") 
+    api_key=st.secrets.get("llm", {}).get("api_key", "ollama"),
 )
 LLM_MODEL = st.secrets.get("llm", {}).get("model_name", "llama3")
 
 def test_llm_connection():
     """Verifica si Ollama o el API de LLM responde."""
     try:
-        # Intento de chat mínimo para validar conexión
         llm_client.models.list()
         return True
-    except Exception as e:
+    except Exception:
         return False
 
 llm_ready = test_llm_connection()
@@ -97,21 +102,15 @@ def load_and_transform_data():
         st.error(f"⚠️ Error conectando a S3 para cargar los datos: {e}")
         return _get_dummy_dataframe()
 
-@st.cache_resource(show_spinner=True)
-def load_ml_model():
-    """Descarga el modelo XGBoost v2 desde S3."""
-    try:
-        s3 = get_s3_client()
-        # El usuario especificó: s3://bronce-scrap-date/models/modelo_xgboost_v2.pkl
-        bucket = "bronce-scrap-date" 
-        model_key = "models/modelo_xgboost_v2.pkl"
-        
-        response = s3.get_object(Bucket=bucket, Key=model_key)
-        model_bytes = io.BytesIO(response['Body'].read())
-        return joblib.load(model_bytes)
-    except Exception as e:
-        st.error(f"❌ Error crítico cargando modelo XGBoost desde S3: {e}")
-        return None
+@st.cache_resource(show_spinner=False, ttl=1800)
+def get_cached_model():
+    """Carga el modelo una vez y lo mantiene en caché."""
+    m, _ = ModelLoader().load_latest_model()
+    return m
+
+# El modelo ya está cargado arriba para uso inmediato, 
+# pero podemos usar la versión cacheada si se prefiere.
+ml_model = get_cached_model()
 
 def apply_ml_scoring(df, model):
     """Genera las predicciones y calcula la rentabilidad potencial para cada registro."""
@@ -553,7 +552,32 @@ with tab4:
 # Sidebar Cleanup
 # ==========================================
 with st.sidebar:
-    st.info(f"Asistente configurado para: **{LLM_MODEL}**")
+    st.markdown("### Estado del sistema")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(
+            label="Modelo MAPE",
+            value=badge["mape"],
+            help="Error porcentual promedio del modelo de precios"
+        )
+    with col2:
+        st.metric(
+            label="Último deploy",
+            value=badge["freshness"],
+        )
+
+    if badge["train_size"]:
+        st.caption(f"Entrenado con {badge['train_size']:,} inmuebles")
+
+    if badge["is_fallback"]:
+        st.warning("Usando modelo anterior (el campeón falló al cargar)")
+    if badge["is_legacy"]:
+        st.info("Usando modelo legacy — ejecuta el orquestador para actualizar")
+
+    st.caption(f"Modelo: `{badge['model_name']}`")
+    st.divider()
+    st.info(f"LLM: **{LLM_MODEL}**")
     if st.button("Limpiar historial de chat"):
         st.session_state.messages = []
         st.rerun()

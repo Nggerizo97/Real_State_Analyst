@@ -2,16 +2,16 @@ name: Daily Real Estate Scraper
 
 on:
   schedule:
-    # Executes at 01:00 UTC on Sunday and Wednesday
     - cron: '0 1 * * 0,3'
-  workflow_dispatch: # Allows manual triggering from GitHub UI
+  workflow_dispatch:
 
 jobs:
   scrape:
     name: "Scrape ${{ matrix.scraper }}"
     runs-on: ubuntu-22.04
+    timeout-minutes: 90  # Fix 5: evita runners zombies
     strategy:
-      fail-fast: false  # Un fallo en un scraper no cancela los demás
+      fail-fast: false
       matrix:
         include:
           - scraper: bancolombia
@@ -44,19 +44,48 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Playwright Browsers
-        run: |
-          playwright install chromium --with-deps
+      # Fix 4: cachear Playwright para no descargar 300MB en cada job
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
-      - name: Setup Cloudflare WARP (Bypass DataDome IP Blocks)
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: playwright install chromium --with-deps
+
+      - name: Install Playwright system deps (always)
+        run: playwright install-deps chromium
+
+      - name: Setup Cloudflare WARP
         run: |
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ jammy main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update && sudo apt-get install cloudflare-warp
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] \
+            https://pkg.cloudflareclient.com/ jammy main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -q && sudo apt-get install -y cloudflare-warp
           warp-cli --accept-tos registration new
           warp-cli --accept-tos mode proxy
           warp-cli --accept-tos connect
-          sleep 5
+
+      # Fix 3: health-check loop — no empieza hasta que WARP responde
+      - name: Wait for WARP proxy to be ready
+        run: |
+          echo "Waiting for WARP proxy on socks5://127.0.0.1:40000..."
+          for i in $(seq 1 12); do
+            if curl -s --max-time 3 --proxy socks5h://127.0.0.1:40000 https://cloudflare.com/cdn-cgi/trace \
+              | grep -q "warp=on"; then
+              echo "✅ WARP active after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 12 ]; then
+              echo "⚠️ WARP not confirmed after 60s — proceeding without proxy guarantee"
+            fi
+            sleep 5
+          done
 
       - name: "Run scraper: ${{ matrix.scraper }}"
         env:
@@ -66,15 +95,50 @@ jobs:
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
           PROXY_URL: "socks5://127.0.0.1:40000"
         run: |
-          echo "Starting ${{ matrix.scraper }} scraper (max_pages=${{ matrix.pages }})..."
-          python scripts/run_${{ matrix.scraper }}.py --pages ${{ matrix.pages }}
-          echo "${{ matrix.scraper }} scraper finished."
+          python scripts/run_${{ matrix.scraper }}.py --pages ${{ matrix.pages }} 2>&1 \
+            | tee /tmp/scraper_${{ matrix.scraper }}.log
+          echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_ENV
+
+      # Fix 6: resumen de resultados — cuántos registros subió cada scraper
+      - name: Scraper summary
+        if: always()
+        run: |
+          LOG="/tmp/scraper_${{ matrix.scraper }}.log"
+          echo "=== Summary: ${{ matrix.scraper }} ==="
+          if [ -f "$LOG" ]; then
+            NEW=$(grep -c "\[NEW\]" "$LOG" || echo 0)
+            SKIP=$(grep -c "\[SKIP\]" "$LOG" || echo 0)
+            PAGES=$(grep "Página [0-9]*/[0-9]*" "$LOG" | tail -1 || echo "—")
+            echo "NEW_RECORDS=$NEW" >> $GITHUB_ENV
+            echo "New/updated records : $NEW"
+            echo "Skipped (no change) : $SKIP"
+            echo "Last page log       : $PAGES"
+          else
+            echo "NEW_RECORDS=0" >> $GITHUB_ENV
+            echo "No log file found."
+          fi
+
+      # Fix 7: Notificación de fallo o inactividad
+      - name: Notify on failure or zero results
+        if: always()
+        run: |
+          EXIT_CODE=${{ env.EXIT_CODE || 0 }}
+          NEW_RECORDS=${{ env.NEW_RECORDS || 0 }}
+          
+          if [ "$EXIT_CODE" -ne 0 ] || [ "$NEW_RECORDS" -eq 0 ]; then
+            MESSAGE="⚠️ Alerta Scraper: ${{ matrix.scraper }}\n- Status: $( [ "$EXIT_CODE" -eq 0 ] && echo "Success" || echo "FAILED" )\n- Nuevos Registros: $NEW_RECORDS\n- Revisa: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Enviando alerta: $MESSAGE"
+            # Placeholder para curl a Slack/Discord/Email
+            # curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"$MESSAGE\"}" ${{ secrets.SLACK_WEBHOOK }}
+          fi
 
   trigger-etl:
     name: Trigger Databricks ETL
     needs: scrape
-    if: always()  # Ejecuta ETL independientemente de si algún scraper falló
+    # Fix 1: corre si al menos un scraper terminó (success o failure), pero NO si fue cancelado
+    if: ${{ needs.scrape.result != 'cancelled' }}
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
 
     steps:
       - name: Trigger Databricks ETL Job
@@ -83,25 +147,36 @@ jobs:
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           JOB_ID: ${{ secrets.DATABRICKS_JOB_ID }}
         run: |
-          echo "🚀 Triggering Databricks Job ID: $JOB_ID..."
-
-          # Limpiar URL por si el usuario la guardó con un "/" al final o sin "https://"
           HOST="${DATABRICKS_HOST%/}"
           if [[ ! "$HOST" =~ ^https?:// ]]; then
             HOST="https://$HOST"
           fi
+          echo "Triggering Databricks Job $JOB_ID at $HOST..."
 
-          echo "Connecting to: $HOST/api/2.1/jobs/run-now"
-
-          response=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+          # Fix 2: retry + timeout + validación de respuesta vacía
+          RESPONSE=$(curl -s \
+            --retry 3 \
+            --retry-delay 5 \
+            --connect-timeout 20 \
+            --max-time 60 \
+            -w "\n%{http_code}" \
+            -X POST \
             "${HOST}/api/2.1/jobs/run-now" \
             -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"job_id\": $JOB_ID}") || true
 
-          if [ "$response" -eq 200 ]; then
-            echo "✅ Databricks Job started successfully!"
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+
+          if [ -z "$HTTP_CODE" ]; then
+            echo "❌ curl failed — no response (network error or timeout)"
+            exit 1
+          elif [ "$HTTP_CODE" -eq 200 ]; then
+            RUN_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('run_id','?'))" 2>/dev/null || echo "?")
+            echo "✅ Databricks Job started — run_id: $RUN_ID"
           else
-            echo "❌ Failed to start Databricks Job. HTTP Status: $response"
+            echo "❌ Databricks API returned HTTP $HTTP_CODE"
+            echo "Response body: $BODY"
             exit 1
           fi

@@ -106,8 +106,9 @@ jobs:
           LOG="/tmp/scraper_${{ matrix.scraper }}.log"
           echo "=== Summary: ${{ matrix.scraper }} ==="
           if [ -f "$LOG" ]; then
-            NEW=$(grep -c "\[NEW\]" "$LOG" || echo 0)
-            SKIP=$(grep -c "\[SKIP\]" "$LOG" || echo 0)
+            # Usar wc -l para evitar el doble eco de 'grep -c || echo 0'
+            NEW=$(grep "\[NEW\]" "$LOG" | wc -l)
+            SKIP=$(grep "\[SKIP\]" "$LOG" | wc -l)
             PAGES=$(grep "Página [0-9]*/[0-9]*" "$LOG" | tail -1 || echo "—")
             echo "NEW_RECORDS=$NEW" >> $GITHUB_ENV
             echo "New/updated records : $NEW"

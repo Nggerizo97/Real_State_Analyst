@@ -12,6 +12,7 @@ import re
 from datetime import datetime
 from playwright.sync_api import Page
 from config.settings import PORTALS_CONFIG
+from src.scrapers.base_scraper import BaseScraper
 from src.utils.checkpoint import CheckpointManager
 
 class CiencuadrasUsadoScraper(BaseScraper):

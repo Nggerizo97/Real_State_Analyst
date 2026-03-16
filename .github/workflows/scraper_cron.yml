@@ -152,16 +152,20 @@ jobs:
         run: |
           LOG="/tmp/scraper_${{ matrix.scraper }}.log"
           if [ -f "$LOG" ]; then
-            NEW=$(grep -c "\[NEW\]" "$LOG" || echo 0)
-            SKIP=$(grep -c "\[SKIP\]" "$LOG" || echo 0)
+            # El flag -c de grep retorna 0 si hay coincidencias, 1 si no hay (pero imprime '0').
+            # Usamos '|| true' para capturar ese '0' sin que el subshell falle.
+            NEW=$(grep -c "\[NEW\]" "$LOG" || true)
+            SKIP=$(grep -c "\[SKIP\]" "$LOG" || true)
             CHECKPOINT=$(grep "Checkpoint guardado" "$LOG" | tail -1 || echo "—")
-            echo "NEW_RECORDS=$NEW" >> $GITHUB_ENV
+            
+            echo "NEW_RECORDS=$NEW" >> "$GITHUB_ENV"
+            
             echo "=== ${{ matrix.scraper }} summary ==="
             echo "New/updated : $NEW"
             echo "Skipped     : $SKIP"
             echo "Checkpoint  : $CHECKPOINT"
           else
-            echo "NEW_RECORDS=0" >> $GITHUB_ENV
+            echo "NEW_RECORDS=0" >> "$GITHUB_ENV"
           fi
 
       - name: Notify on failure or zero results

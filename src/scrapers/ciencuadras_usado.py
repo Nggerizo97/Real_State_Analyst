@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 from playwright.sync_api import Page
 from config.settings import PORTALS_CONFIG
-from src.scrapers.base_scraper import BaseScraper
+from src.utils.checkpoint import CheckpointManager
 
 class CiencuadrasUsadoScraper(BaseScraper):
 
@@ -22,6 +22,7 @@ class CiencuadrasUsadoScraper(BaseScraper):
     def __init__(self):
         super().__init__("ciencuadras_usado")
         self.base_url = PORTALS_CONFIG[self.portal_name]["base_url"]
+        self.checkpoint = CheckpointManager(self.portal_name)
 
     # ------------------------------------------------------------------
     # Orquestador principal
@@ -50,12 +51,32 @@ class CiencuadrasUsadoScraper(BaseScraper):
         self._scrape_pages(page, max_pages)
 
     # ------------------------------------------------------------------
-    # Barrido de páginas
+    # Barrido de páginas con checkpoint
     # ------------------------------------------------------------------
 
     def _scrape_pages(self, page: Page, max_pages: int) -> None:
-        for current_page in range(1, max_pages + 1):
-            self.logger.info(f"CC-Usado — Página {current_page}/{max_pages}")
+        # Retomar desde checkpoint si existe
+        last_completed = self.checkpoint.load()
+        start_page = (last_completed or 0) + 1
+        total_scraped = 0
+
+        if last_completed:
+            self.logger.info(
+                f"Retomando desde página {start_page} "
+                f"(checkpoint: última completada = {last_completed})"
+            )
+            if not self._navigate_to_page(page, last_completed + 1):
+                self.logger.error(
+                    f"No se pudo navegar directamente a la página {start_page}. "
+                    "Se intentará avanzar secuencialmente o empezar desde 1."
+                )
+                # No borramos el checkpoint aquí, dejamos que _navigate_to_page maneje el fallback
+        
+        end_page = start_page + max_pages - 1
+        finished_cleanly = False
+
+        for current_page in range(start_page, end_page + 1):
+            self.logger.info(f"CC-Usado — Página {current_page} (batch hasta {end_page})")
 
             self.human_delay(page, 2000, 4000)
 
@@ -71,26 +92,79 @@ class CiencuadrasUsadoScraper(BaseScraper):
             cards = self._wait_for_cards_with_retries(page, current_page)
             if not cards:
                 self.logger.error(f"Página {current_page} persistió vacía — fin del scraping.")
+                finished_cleanly = True # No hay más páginas
                 break
 
             self.logger.info(f"Encontradas {len(cards)} tarjetas en página {current_page}")
 
-            nuevos = 0
+            nuevos_en_pagina = 0
             for card_link in cards:
                 if self._extract_property(card_link):
-                    nuevos += 1
+                    nuevos_en_pagina += 1
+            
+            total_scraped += nuevos_en_pagina
+            self.logger.info(f"Resultados p{current_page}: {nuevos_en_pagina} nuevos/actualizados.")
 
-            self.logger.info(f"Resultados p{current_page}: {nuevos} nuevos/actualizados.")
-
-            # Flush periódico y gestión de resiliencia
+            # Flush periódico y guardar checkpoint después de cada página
             self.on_page_done()
+            self.checkpoint.save(last_page=current_page, total_scraped=total_scraped)
 
-            if current_page < max_pages:
+            if current_page < end_page:
+                self.logger.info(f"Intentando avanzar a la página {current_page + 1}...")
                 if not self._click_next(page, current_page):
                     self.logger.info("Fin de paginación natural.")
+                    finished_cleanly = True
                     break
             else:
-                self.logger.info(f"Límite {max_pages} alcanzado.")
+                self.logger.info(
+                    f"Batch de {max_pages} páginas completado. "
+                    f"Checkpoint en página {current_page} para el próximo run."
+                )
+
+        # Solo borrar el checkpoint si terminamos porque no hay más páginas
+        if finished_cleanly:
+            self.checkpoint.clear()
+            self.logger.info(
+                f"Ciclo completo — checkpoint borrado. "
+                f"Próximo run empezará desde página 1."
+            )
+
+    # ------------------------------------------------------------------
+    # Navegar directamente a una página (para retomar checkpoint)
+    # ------------------------------------------------------------------
+
+    def _navigate_to_page(self, page: Page, target_page: int) -> bool:
+        """
+        Intenta navegar a la página N. Como CienCuadras es AJAX,
+        intentamos click en el número de página si es visible.
+        """
+        if target_page <= 1:
+            return True
+
+        self.logger.info(f"Navegando directo a página {target_page}...")
+
+        # Intentar click en número de página en la paginación (si está en el rango visible)
+        try:
+            target_li = page.query_selector(
+                f"ul.pagination.desktop li:has(a:text-is('{target_page}'))"
+            )
+            if target_li:
+                target_li.scroll_into_view_if_needed()
+                page.wait_for_timeout(500)
+                self._dismiss_overlays(page)
+                target_li.click()
+                page.wait_for_timeout(5000)
+                active = self._get_active_page(page)
+                if active == target_page:
+                    return True
+        except Exception as e:
+            self.logger.debug(f"Error en click directo a p{target_page}: {e}")
+
+        self.logger.warning(
+            f"No se pudo navegar directo a página {target_page}. "
+            "Se avanzará secuencialmente desde donde esté."
+        )
+        return False
 
     def _wait_for_cards_with_retries(self, page: Page, current_page: int, max_retries: int = 3):
         for attempt in range(1, max_retries + 1):

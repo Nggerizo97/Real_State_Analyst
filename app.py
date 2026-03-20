@@ -1,583 +1,1169 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import boto3
-import joblib
+"""
+app.py — Real Estate Analyst Colombia
+======================================
+4 apartados:
+  1. Asesor Financiero — candidatos según perfil de crédito
+  2. Asesor de Inversión — mejor opción según datos cross-portal y región
+  3. Visión de Compra — inteligencia de mercado Colombia
+  4. Valoración — estimación por características + análisis de imagen con LLM
+"""
+
 import io
-import plotly.express as px
-from openai import OpenAI
 import json
 import re
-from src.utils.model_loader import ModelLoader
+import warnings
+from datetime import datetime, timezone
 
-# ==========================================
-# Configuración Principal
-# ==========================================
+import boto3
+import numpy as np
+import pandas as pd
+import pickle
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from openai import OpenAI
+
+from src.utils.scorer import score_dataframe, score_single
+
+warnings.filterwarnings("ignore")
+
+# ══════════════════════════════════════════════════════════════════
+# CONFIG
+# ══════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Agente Inmobiliario Inteligente (RAG)",
-    page_icon="🤖",
+    page_title="Real Estate Analyst — Colombia",
+    page_icon="◈",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# Inicializar utilidades de S3 y ML
-model_loader = ModelLoader()
-ml_model, manifest = model_loader.load_latest_model()
-badge = ModelLoader.get_badge_data(manifest)
+# ── CSS — tema oscuro completo ─────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&family=DM+Mono:wght@400;500&display=swap');
 
-# Inicializar cliente LLM configurado para Ollama o API compatible
+:root {
+    --ink:#e8e4dc; --paper:#13131a; --gold:#b8935a; --gold-lt:#d4aa72;
+    --slate:#1e1e2a; --surface:#16161f; --surface2:#1e1e2a; --surface3:#252535;
+    --muted:#7a7a8c; --border:#2e2e40; --border2:#3a3a50;
+    --green:#2a9b6a; --red:#c44040; --green-lt:rgba(26,107,74,.18); --red-lt:rgba(139,32,32,.18);
+    --blue:#2a6ab8; --blue-lt:rgba(26,74,139,.18);
+}
+html,body,[class*="css"]{font-family:'DM Sans',sans-serif;background:var(--paper)!important;color:var(--ink)!important}
+.stApp{background:var(--paper)!important}
+.block-container{padding:2rem 2.5rem 4rem!important;max-width:1400px}
+h1{font-family:'Playfair Display',serif!important;font-weight:900!important;font-size:2.2rem!important;letter-spacing:-.02em;color:var(--ink)!important}
+h2{font-family:'Playfair Display',serif!important;font-weight:700!important;font-size:1.4rem!important;color:var(--ink)!important}
+h3{font-family:'DM Sans',sans-serif!important;font-weight:500!important;font-size:.85rem!important;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)!important}
+p,li,label,span{color:var(--ink)!important}
+.stMarkdown{color:var(--ink)!important}
+caption{color:var(--muted)!important;font-size:.75rem!important}
+.stTabs [data-baseweb="tab-list"]{gap:0;border-bottom:2px solid var(--border2);background:transparent}
+.stTabs [data-baseweb="tab"]{font-family:'DM Sans',sans-serif;font-size:.75rem;font-weight:500;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:.7rem 1.4rem;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;background:transparent}
+.stTabs [aria-selected="true"]{color:var(--gold)!important;border-bottom:2px solid var(--gold)!important;font-weight:700!important}
+[data-testid="stMetric"]{background:var(--surface2)!important;border:1px solid var(--border)!important;border-top:3px solid var(--gold)!important;padding:1.1rem 1.2rem;border-radius:2px}
+[data-testid="stMetricLabel"]{font-size:.65rem!important;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)!important;font-weight:500}
+[data-testid="stMetricValue"]{font-family:'Playfair Display',serif!important;font-size:1.6rem!important;color:var(--ink)!important}
+[data-testid="stMetricDelta"]{color:var(--muted)!important}
+.stButton>button{font-family:'DM Sans',sans-serif;font-size:.75rem;font-weight:500;letter-spacing:.1em;text-transform:uppercase;background:var(--gold);color:#0a0a0f;border:none;border-radius:2px;padding:.65rem 1.6rem;transition:background .2s}
+.stButton>button:hover{background:var(--gold-lt);color:#0a0a0f;border:none}
+[data-testid="stDataFrame"]{border:1px solid var(--border)!important;border-radius:2px!important}
+.stNumberInput>div>div>input,.stTextInput>div>div>input,.stSelectbox>div>div,.stMultiSelect>div>div{border-radius:2px!important;border-color:var(--border)!important;background:var(--surface3)!important;color:var(--ink)!important;font-family:'DM Sans',sans-serif!important}
+.streamlit-expanderHeader{background:var(--surface2)!important;border:1px solid var(--border)!important;border-radius:2px!important;color:var(--muted)!important;font-family:'DM Sans',sans-serif!important;font-size:.8rem!important;font-weight:500!important;letter-spacing:.08em;text-transform:uppercase}
+.streamlit-expanderContent{background:var(--surface)!important;border:1px solid var(--border)!important;border-top:none!important;border-radius:0 0 2px 2px!important;padding:1rem!important}
+.stWarning{background:rgba(184,147,90,.12)!important;border-color:var(--gold)!important}
+.stInfo{background:rgba(42,106,184,.12)!important;border-color:var(--blue)!important}
+.stError{background:rgba(196,64,64,.12)!important;border-color:var(--red)!important}
+.stSuccess{background:rgba(42,155,106,.12)!important;border-color:var(--green)!important}
+[data-testid="stSidebar"]{background:#0d0d14!important}
+[data-testid="stSidebar"] *{color:#c8c4bc!important}
+[data-testid="stSidebar"] [data-testid="stMetric"]{background:rgba(255,255,255,.05)!important;border-color:rgba(255,255,255,.08)!important;border-top-color:var(--gold)!important}
+[data-testid="stSidebar"] [data-testid="stMetricValue"]{color:white!important}
+[data-testid="stSidebar"] .stButton>button{background:transparent;border:1px solid rgba(255,255,255,.15);color:#c8c4bc;width:100%}
+[data-testid="stSidebar"] .stButton>button:hover{background:rgba(255,255,255,.07);border-color:var(--gold)}
+.stChatMessage{background:var(--surface2)!important;border-radius:2px!important}
+[data-testid="stChatMessageContent"]{color:var(--ink)!important}
+.gold-rule{height:1px;background:linear-gradient(90deg,var(--gold),transparent);margin:1.4rem 0;border:none}
+.section-label{font-family:'DM Sans',sans-serif;font-size:.62rem;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--gold);border-left:3px solid var(--gold);padding-left:.6rem;margin-bottom:.4rem}
+.disclaimer{background:rgba(184,147,90,.08);border-left:3px solid var(--gold);padding:.75rem 1rem;font-size:.8rem;color:var(--muted);border-radius:0 2px 2px 0;margin-bottom:1rem;line-height:1.6}
+.ticker{background:#0d0d14;color:var(--gold);padding:.45rem 2.5rem;font-family:'DM Mono',monospace;font-size:.8rem;letter-spacing:.04em;margin:-2rem -2.5rem 2rem;overflow:hidden;white-space:nowrap;border-bottom:1px solid var(--border)}
+[data-testid="stFileUploader"]{background:var(--surface3)!important;border:1px dashed var(--border2)!important;border-radius:2px!important}
+</style>
+""", unsafe_allow_html=True)
+
+# Constantes de color para gráficas — NUNCA usar "white" en paper_bgcolor
+_BG   = "#1e1e2a"
+_PLOT = "#16161f"
+_GRID = "#2a2a3a"
+_TEXT = "#c8c4bc"
+_MUTED_TEXT = "#7a7a8c"
+
+def dark_layout(fig, height=380, **extra):
+    """Aplica tema oscuro consistente a cualquier figura Plotly."""
+    layout_params = dict(
+        paper_bgcolor=_BG, plot_bgcolor=_PLOT,
+        font=dict(family="DM Sans", size=11, color=_TEXT),
+        height=height, margin=dict(l=0, r=0, t=10, b=0),
+        xaxis=dict(gridcolor=_GRID, linecolor=_GRID, zerolinecolor=_GRID,
+                   tickfont=dict(color=_TEXT), title_font=dict(color=_MUTED_TEXT)),
+        yaxis=dict(gridcolor=_GRID, linecolor=_GRID, zerolinecolor=_GRID,
+                   tickfont=dict(color=_TEXT), title_font=dict(color=_MUTED_TEXT)),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=_TEXT)),
+    )
+    layout_params.update(extra)
+    fig.update_layout(**layout_params)
+    return fig
+
+# ══════════════════════════════════════════════════════════════════
+# CLIENTES Y CARGA
+# ══════════════════════════════════════════════════════════════════
+
 llm_client = OpenAI(
     base_url=st.secrets.get("llm", {}).get("api_base", "http://localhost:11434/v1"),
     api_key=st.secrets.get("llm", {}).get("api_key", "ollama"),
 )
 LLM_MODEL = st.secrets.get("llm", {}).get("model_name", "llama3")
+MODELO_PATH = "models/"
+MANIFEST_KEY = "models/manifest.json"
 
-def test_llm_connection():
-    """Verifica si Ollama o el API de LLM responde."""
+
+def llm_ready():
     try:
         llm_client.models.list()
         return True
     except Exception:
         return False
 
-llm_ready = test_llm_connection()
 
-# ==========================================
-# Caché y Conexiones a S3
-# ==========================================
+
 @st.cache_resource(show_spinner=False)
-def get_s3_client():
+def get_s3():
     return boto3.client(
-        's3',
+        "s3",
         aws_access_key_id=st.secrets["aws"]["aws_access_key_id"],
         aws_secret_access_key=st.secrets["aws"]["aws_secret_access_key"],
-        region_name=st.secrets["aws"]["aws_region"]
+        region_name=st.secrets["aws"].get("aws_region", "us-east-1"),
     )
 
-@st.cache_data(show_spinner=True, ttl=3600)
-def load_and_transform_data():
-    """Descarga, une y aplica ETL On-The-Fly a los archivos Parquet en S3."""
+
+@st.cache_resource(show_spinner=False, ttl=1800)
+def load_model_bundle():
+    """Carga el bundle campeón desde S3 vía manifest; si no existe, usa el bundle_v3 más reciente."""
+    s3 = get_s3()
+    bucket = st.secrets["aws"]["s3_bucket_name"]
+
+    manifest = {}
+    key = ""
+
     try:
-        s3 = get_s3_client()
+        manifest = json.loads(
+            s3.get_object(Bucket=bucket, Key=MANIFEST_KEY)["Body"].read()
+        )
+        key = manifest.get("champion_model_key", "")
+    except Exception:
+        st.sidebar.warning("Manifest no encontrado — buscando bundle_v3 más reciente en S3...")
+        objs = s3.list_objects_v2(Bucket=bucket, Prefix=MODELO_PATH).get("Contents", [])
+        bundles = sorted(
+            [o["Key"] for o in objs if "bundle_v3" in o["Key"] and o["Key"].endswith(".pkl")]
+        )
+        if not bundles:
+            return None, {}
+        key = bundles[-1]
+        manifest = {
+            "champion_model_key": key,
+            "promoted_at": "S3 Discovery",
+        }
+
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        bundle = pickle.load(io.BytesIO(resp["Body"].read()))
+
+        if isinstance(bundle, dict) and "model" in bundle:
+            return bundle, manifest
+
+        return {
+            "model": bundle,
+            "strategy": "absolute",
+            "city_stats": None,
+            "segment_stats": None,
+            "fuente_ratio_stats": None,
+            "fuente_segmento_ratio_stats": None,
+            "market_meta": {},
+            "feature_cols": [],
+        }, manifest
+    except Exception as e:
+        st.sidebar.error(f"Error cargando bundle {key}: {e}")
+        return None, {}
+
+
+@st.cache_data(show_spinner="Cargando portafolio...", ttl=3600)
+def load_gold():
+    """Lee el Gold consumable desde S3."""
+    try:
         bucket = st.secrets["aws"]["s3_bucket_name"]
         path = f"s3://{bucket}/gold/app_consumable/"
         storage_options = {
             "key": st.secrets["aws"]["aws_access_key_id"],
-            "secret": st.secrets["aws"]["aws_secret_access_key"]
+            "secret": st.secrets["aws"]["aws_secret_access_key"],
         }
-        
-        # Pandas puede leer directorios completos si usa pyarrow/s3fs nativo
-        df_final = pd.read_parquet(path, storage_options=storage_options)
-        
-        if df_final.empty:
-            return _get_dummy_dataframe()
-        
-        # ---------------------------------------------
-        # ETL on-the-fly (Limpieza requerida)
-        # ---------------------------------------------
-        # 1. Eliminar filas sin precio o ubicación esencial
-        # Asumimos que la raw column de ubicacion es 'ubicacion' o 'ubicacion_raw'
-        ubi_col = 'ubicacion' if 'ubicacion' in df_final.columns else 'ubicacion_raw'
-        
-        # Filtrar nulos si hay precio y ubicación
-        if 'precio_num' in df_final.columns and ubi_col in df_final.columns:
-            df_final.dropna(subset=['precio_num', ubi_col], inplace=True)
-            df_final = df_final[df_final['precio_num'] > 0]
-        else:
-            return _get_dummy_dataframe()
-            
-        # 2. Homologar columnas esperadas si faltan
-        for col in ['area_m2', 'habitaciones_num', 'banos_num', 'id_original']:
-            if col not in df_final.columns:
-                df_final[col] = 0 if 'num' in col or 'm2' in col else "Desconocido"
-                
-        # 3. Limpiar Ubicación (ej: Dividir por pipes y tomar la primera parte)
-        # Elimina "nan" literales que venían como strings
-        df_final[ubi_col] = df_final[ubi_col].astype(str).replace({'nan': 'Desconocida', 'None': 'Desconocida'})
-        df_final['ubicacion_clean'] = df_final[ubi_col].apply(lambda x: str(x).split('|')[0].strip())
-        
-        return df_final
-            
+        df = pd.read_parquet(path, storage_options=storage_options)
+        if df.empty:
+            return _dummy_df()
+        return _clean_gold(df)
     except Exception as e:
-        st.error(f"⚠️ Error conectando a S3 para cargar los datos: {e}")
-        return _get_dummy_dataframe()
+        st.warning(f"Usando datos de demo ({e})")
+        return _dummy_df()
 
-@st.cache_resource(show_spinner=False, ttl=1800)
-def get_cached_model():
-    """Carga el modelo una vez y lo mantiene en caché."""
-    m, _ = ModelLoader().load_latest_model()
-    return m
 
-# El modelo ya está cargado arriba para uso inmediato, 
-# pero podemos usar la versión cacheada si se prefiere.
-ml_model = get_cached_model()
-
-def apply_ml_scoring(df, model):
-    """Genera las predicciones y calcula la rentabilidad potencial para cada registro."""
-    if model is None or df.empty:
-        df['precio_predicho'] = df['precio_num']
-        df['rentabilidad_potencial'] = 0.0
-        df['estado_inversion'] = "⚪ Sin Modelo"
-        return df
-        
-    try:
-        # Mapear columnas a los nombres que espera el modelo v2
-        # El error reportó: {'estado_inmueble', 'tipo_inmueble', 'habitaciones', 'banos', 'fuente'}
-        # Adicionalmente suele pedir area_m2 o similares, pero nos basamos en el error estricto.
-        
-        # Crear mapeos y rellenos
-        df_pred = df.copy()
-        
-        # Mapeo de nombres
-        mapeo = {
-            'habitaciones_num': 'habitaciones',
-            'banos_num': 'banos'
-        }
-        for col_raw, col_model in mapeo.items():
-            if col_raw in df_pred.columns:
-                df_pred[col_model] = df_pred[col_raw]
-            else:
-                df_pred[col_model] = 0
-
-        # Columnas categóricas o nuevas no presentes en el DataFrame original
-        if 'estado_inmueble' not in df_pred.columns:
-            df_pred['estado_inmueble'] = 'usado' # Valor por defecto
-        if 'tipo_inmueble' not in df_pred.columns:
-            df_pred['tipo_inmueble'] = 'apartamento' # Valor por defecto
-        if 'fuente' not in df_pred.columns:
-            df_pred['fuente'] = 'desconocida'
-
-        # Asegurar tipos
-        df_pred['habitaciones'] = df_pred['habitaciones'].fillna(0).astype(int)
-        df_pred['banos'] = df_pred['banos'].fillna(0).astype(int)
-        
-        # Extraer features clave según lo que el modelo pide
-        # El error reportó que falta 'texto_completo'
-        if 'texto_completo' not in df_pred.columns:
-             df_pred['texto_completo'] = df_pred.get('id_original', '').astype(str) + " " + df_pred.get('ubicacion_clean', '').astype(str)
-        df_pred['texto_completo'] = df_pred['texto_completo'].fillna('')
-
-        features_model = ['area_m2', 'habitaciones', 'banos', 'estado_inmueble', 'tipo_inmueble', 'fuente', 'texto_completo']
-        X = df_pred[features_model].copy()
-        
-        # Las predicciones se hacen a todo el DF
-        df['precio_predicho'] = model.predict(X)
-        
-        # Calcular Rentabilidad Potencial Formula: ((Precio_Predicho - Precio_Real) / Precio_Real) * 100
-        df['rentabilidad_potencial'] = ((df['precio_predicho'] - df['precio_num']) / df['precio_num']) * 100
-        
-        # Crear Etiqueta Visual Rápida
-        df['estado_inversion'] = df['rentabilidad_potencial'].apply(
-            lambda x: "🟢 Oportunidad" if x > 0 else "🔴 Sobrevalorado"
+def _clean_gold(df: pd.DataFrame) -> pd.DataFrame:
+    ubi_col = "ubicacion_norm" if "ubicacion_norm" in df.columns else (
+        "ubicacion_raw" if "ubicacion_raw" in df.columns else None
+    )
+    if ubi_col:
+        df["ubicacion_clean"] = (
+            df[ubi_col].astype(str)
+            .str.replace(r"\|.*", "", regex=True)
+            .str.strip()
+            .replace({"nan": "Desconocida", "None": "Desconocida", "": "Desconocida"})
         )
-        
-        # Redondear rentabilidades y evitar infinitos
-        df['rentabilidad_potencial'] = df['rentabilidad_potencial'].replace([np.inf, -np.inf], 0).round(2)
-        
-    except Exception as e:
-        st.error(f"Error procesando el score ML: {e}")
-        df['precio_predicho'] = df['precio_num']
-        df['rentabilidad_potencial'] = 0.0
-        df['estado_inversion'] = "⚠️ Predicción Fallida"
-        
-    return df
+        # Eliminar tokens duplicados consecutivos ("cali cali" → "Cali")
+        def _dedup_tokens(text):
+            if not isinstance(text, str) or text in ("Desconocida",):
+                return text
+            tokens = text.lower().strip().split()
+            seen = []
+            for tok in tokens:
+                if not seen or tok != seen[-1]:
+                    seen.append(tok)
+            result = " ".join(seen)
+            return result.capitalize() if result else text
+        df["ubicacion_clean"] = df["ubicacion_clean"].apply(_dedup_tokens)
+    else:
+        df["ubicacion_clean"] = "Desconocida"
 
-def _get_dummy_dataframe():
+    if "city_token" not in df.columns:
+        df["city_token"] = "otra_ciudad"
+    df["city_token"] = df["city_token"].fillna("otra_ciudad")
+
+    for col in ["area_m2", "habitaciones", "banos", "garajes"]:
+        if col not in df.columns:
+            df[col] = np.nan
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df[df["precio_num"].notna() & (df["precio_num"] > 0)]
+    df = df[df["area_m2"].notna() & (df["area_m2"] > 0)]
+
+    for col in ["tipo_inmueble", "estado_inmueble", "fuente"]:
+        if col not in df.columns:
+            df[col] = "desconocido"
+        df[col] = df[col].fillna("desconocido").astype(str)
+
+    df["precio_m2"] = df["precio_num"] / df["area_m2"]
+
+    for col in ["num_portales", "dispersion_pct_grupo", "precio_mediano_grupo",
+                "precio_min_grupo", "precio_max_grupo"]:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    return df.reset_index(drop=True)
+
+
+def _dummy_df() -> pd.DataFrame:
     np.random.seed(42)
-    n = 100
-    df = pd.DataFrame({
-        "id_original": [f"Prueba-{i}" for i in range(1, n + 1)],
-        "precio_num": np.random.randint(150, 800, n) * 1000000.0,
-        "area_m2": np.random.randint(40, 200, n).astype(float),
-        "ubicacion_clean": np.random.choice(["Norte", "Sur", "Centro", "Occidente", "Chapinero", "Oriente Antioqueño"], n),
-        "habitaciones_num": np.random.randint(1, 5, n),
-        "banos_num": np.random.randint(1, 4, n),
-        "url": ["https://ejemplo.com"] * n
+    n = 300
+    zonas = ["Chapinero", "El Poblado", "Laureles", "Usaquén", "Palermo",
+             "Envigado", "Sabaneta", "Rosales", "Cedritos", "Bello",
+             "Cali Sur", "Barranquilla Norte", "Cartagena Bocagrande"]
+    cities = ["bogota"] * 120 + ["medellin"] * 80 + ["cali"] * 50 + ["barranquilla"] * 50
+    return pd.DataFrame({
+        "id_original": [f"DEMO-{i:04d}" for i in range(n)],
+        "precio_num": np.random.randint(150, 2000, n) * 1_000_000.0,
+        "area_m2": np.random.randint(40, 280, n).astype(float),
+        "ubicacion_clean": np.random.choice(zonas, n),
+        "city_token": np.random.choice(cities, n),
+        "habitaciones": np.random.randint(1, 5, n).astype(float),
+        "banos": np.random.randint(1, 4, n).astype(float),
+        "garajes": np.random.randint(0, 3, n).astype(float),
+        "tipo_inmueble": np.random.choice(["apartamento", "casa", "otro"], n),
+        "estado_inmueble": np.random.choice(["usado", "nuevo"], n),
+        "fuente": np.random.choice(["ciencuadras_usado", "fincaraiz", "metrocuadrado",
+                                     "bancolombia_tu360", "properati"], n),
+        "url": ["https://ejemplo.com"] * n,
+        "num_portales": np.random.choice([1, 2, 3], n, p=[0.7, 0.2, 0.1]).astype(float),
+        "dispersion_pct_grupo": np.random.uniform(0, 15, n),
+        "precio_mediano_grupo": np.random.randint(150, 2000, n) * 1_000_000.0,
+        "precio_min_grupo": np.random.randint(120, 1800, n) * 1_000_000.0,
+        "precio_max_grupo": np.random.randint(180, 2200, n) * 1_000_000.0,
+        "precio_m2": np.random.uniform(3e6, 12e6, n),
     })
-    return df
 
-# ==========================================
-# UI Principal: Navegación por Apartados
-# ==========================================
-st.title("🤖 Real Estate Analyst - Asistente Inteligente")
 
-# Cargar Master Table y aplicar Scores ML a todo el universo primero.
-raw_data = load_and_transform_data()
-ml_model = load_ml_model()
+
+
+# ══════════════════════════════════════════════════════════════════
+# CARGA INICIAL
+# ══════════════════════════════════════════════════════════════════
+bundle, manifest = load_model_bundle()
+raw_df = load_gold()
 
 if "master_db" not in st.session_state:
-    st.session_state.master_db = apply_ml_scoring(raw_data.copy(), ml_model)
+    with st.spinner("Calculando señales de mercado..."):
+        st.session_state.master_db = score_dataframe(raw_df.copy(), bundle)
 
-df_inmuebles = st.session_state.master_db
+df = st.session_state.master_db
 
-if df_inmuebles.empty:
-    st.error("❌ Error de Datos: No se pudieron cargar los inmuebles desde S3. Verifica los permisos del bucket.")
-    st.stop()
+# KPIs globales
+N         = len(df)
+MED_PRECIO = df["precio_num"].median()
+MED_M2     = df["precio_m2"].median() if "precio_m2" in df.columns else 0
+N_ZONAS    = (df["city_token"].value_counts() >= 5).sum()
+N_OPT      = (df["estado_inversion"] == "Oportunidad").sum()
+MAPE_BADGE = manifest.get("metrics", {}).get("mape", "N/A")
+DEPLOYED = (
+    manifest.get("promoted_at", "")
+    or manifest.get("trained_at", "")
+    or ""
+)[:10] if manifest else ""
 
-if not llm_ready:
-    st.warning(f"⚠️ **Ollama No Detectado:** El asistente de chat (RAG) no estará disponible. Asegúrate de que Ollama esté corriendo en `{st.secrets['llm']['api_base']}` con el modelo `{LLM_MODEL}`.")
 
-# Crear los 4 apartados solicitados
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📍 Asesor Inmobiliario", 
-    "📈 Asesor de Inversión", 
-    "📊 Visión de Compra", 
-    "🏗️ Valoración"
+# ══════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ══════════════════════════════════════════════════════════════════
+with st.sidebar:
+    st.markdown(
+        '<div style="font-family:Playfair Display,serif;font-size:1.3rem;'
+        'font-weight:900;color:white;margin-bottom:.2rem">◈ REA</div>'
+        '<div style="font-size:.62rem;letter-spacing:.15em;color:#b8935a;'
+        'text-transform:uppercase;margin-bottom:1.2rem">Real Estate Analyst · Colombia</div>',
+        unsafe_allow_html=True,
+    )
+    sb1, sb2 = st.columns(2)
+    sb1.metric("MAPE modelo", f"{MAPE_BADGE}%" if isinstance(MAPE_BADGE, (int, float)) else MAPE_BADGE)
+    sb2.metric("Actualizado", DEPLOYED or "N/A")
+
+    st.markdown(
+        '<hr style="border-color:rgba(255,255,255,.1);margin:.9rem 0">',
+        unsafe_allow_html=True,
+    )
+    for label, val in [("Inmuebles", f"{N:,}"), ("Ciudades", f"{N_ZONAS}"),
+                        ("Oportunidades", f"{N_OPT:,}"), ("Modelo", LLM_MODEL)]:
+        st.markdown(
+            f'<div style="display:flex;justify-content:space-between;font-size:.78rem;'
+            f'padding:.22rem 0;border-bottom:1px solid rgba(255,255,255,.07)">'
+            f'<span style="color:rgba(255,255,255,.45)">{label}</span>'
+            f'<span style="color:white;font-family:DM Mono,monospace">{val}</span></div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("Limpiar conversación"):
+        for k in ["messages", "chat_usage", "tab1_candidates"]:
+            if k in st.session_state:
+                del st.session_state[k]
+        st.rerun()
+    st.markdown(
+        '<div style="font-size:.62rem;color:rgba(255,255,255,.22);margin-top:1.2rem;line-height:1.6">'
+        'No constituye asesoría financiera certificada.<br>'
+        'Datos de portales públicos colombianos.</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
+# HEADER
+# ══════════════════════════════════════════════════════════════════
+ticker_txt = "  ·  ".join([
+    f"◈ {N:,} INMUEBLES ACTIVOS",
+    f"PRECIO MEDIANO ${MED_PRECIO/1e6:.0f}M COP",
+    f"M² MEDIANO ${MED_M2/1e6:.2f}M COP",
+    f"{N_ZONAS} CIUDADES CUBIERTAS",
+    f"{N_OPT} OPORTUNIDADES DETECTADAS",
+    f"7 PORTALES · MODELO MAPE {MAPE_BADGE}%",
 ])
+st.markdown(f'<div class="ticker">{ticker_txt}</div>', unsafe_allow_html=True)
 
-# Identificar fecha de entrenamiento (Simulada para el bot)
-FECHA_ENTRENAMIENTO = "2024-05-20" # Ejemplo de fecha
+col_h, col_s = st.columns([3, 1])
+with col_h:
+    st.markdown('<div class="section-label">Plataforma de inteligencia inmobiliaria</div>',
+                unsafe_allow_html=True)
+    st.title("Real Estate Analyst")
+    st.markdown(
+        f'<p style="color:var(--muted);font-size:.88rem;margin-top:-.5rem">'
+        f'Colombia · {N:,} inmuebles · 7 portales · datos actualizados {DEPLOYED}</p>',
+        unsafe_allow_html=True,
+    )
 
-def mostrar_disclaimer():
-    st.info(f"ℹ️ **Aviso Legal:** Soy un asistente virtual basado en inteligencia artificial. Mi entrenamiento tiene fecha de corte al **{FECHA_ENTRENAMIENTO}**. No soy un asesor inmobiliario certificado; por favor, consulta con profesionales antes de tomar decisiones financieras.")
+st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# Función Chat RAG Centralizada con Contexto
-# ---------------------------------------------------------
-def render_contextual_chat(context_type="general"):
-    st.divider()
-    st.markdown(f"### 💬 Consulta a tu Asesor ({context_type})")
-    
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "chat_usage" not in st.session_state:
-        st.session_state.chat_usage = 0
-    
-    CHAT_MAX_LIMIT = 5 # Límite de mensajes por sesión
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Inmuebles activos", f"{N:,}")
+k2.metric("Precio mediano", f"${MED_PRECIO/1e6:.0f}M")
+k3.metric("Precio / m²", f"${MED_M2/1e6:.2f}M")
+k4.metric("Oportunidades", f"{N_OPT:,}",
+          help="Inmuebles donde el precio de lista supera >15% al modelo — posible margen de negociación")
 
-    # Mostrar historial
-    for msg in st.session_state.messages:
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════
+# FUNCIÓN LLM CHAT — reutilizable
+# ══════════════════════════════════════════════════════════════════
+
+FECHA_CORTE = manifest.get("deployed_at", "2026-03")[:7] if manifest else "2026-03"
+
+DISCLAIMER_HTML = f"""
+<div class="disclaimer">
+<strong>Aviso importante:</strong> Este asistente es una IA con entrenamiento de datos
+hasta <strong>{FECHA_CORTE}</strong>. No es un asesor inmobiliario, financiero ni jurídico
+certificado. Las recomendaciones son orientativas y se basan en datos de portales públicos —
+consulta con un profesional antes de tomar decisiones de compra o inversión.
+</div>
+"""
+
+
+def render_chat(tab_key: str, system_prompt: str, placeholder: str, ctx_df: pd.DataFrame = None):
+    """Renderiza el chat contextual con límite de mensajes."""
+    msgs_key  = f"messages_{tab_key}"
+    usage_key = f"usage_{tab_key}"
+
+    if msgs_key  not in st.session_state: st.session_state[msgs_key]  = []
+    if usage_key not in st.session_state: st.session_state[usage_key] = 0
+
+    LIMIT = 6
+
+    for msg in st.session_state[msgs_key]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Control de Límite de Mensajes
-    if st.session_state.chat_usage >= CHAT_MAX_LIMIT:
-        st.warning(f"🚫 Has alcanzado el límite de {CHAT_MAX_LIMIT} consultas por sesión.")
+    if st.session_state[usage_key] >= LIMIT:
+        st.info(f"Límite de {LIMIT} consultas por sesión. Limpia la conversación en el sidebar.")
         return
 
-    user_input = st.chat_input(f"Pregunta sobre {context_type}... ({st.session_state.chat_usage}/{CHAT_MAX_LIMIT})", key=f"chat_{context_type}")
-    
-    if user_input:
-        st.session_state.chat_usage += 1
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
-            
-        # Construcción del Contexto RAG
-        # 1. Datos de sesión (Finanzas, Candidatos)
-        session_context = {
-            "monto_prestamo": st.session_state.get('prestamo_solicitado', 0),
-            "capacidad_mensual": st.session_state.get('capacidad_endeudamiento', 0),
-            "tasa_interes": st.session_state.get('tasa_interes', 0),
-            "num_candidatos": len(st.session_state.get('target_properties', []))
-        }
-        
-        # 2. Búsqueda en DB
-        def busqueda_rag_local(query, dataframe):
-            query = query.lower()
-            palabras = [w for w in re.findall(r'\w+', query) if len(w) > 3]
-            if not palabras:
-                return dataframe.sort_values(by='rentabilidad_potencial', ascending=False).head(3)
-            matriz_busqueda = dataframe['ubicacion_clean'].astype(str).str.lower() + " " + dataframe.get('id_original', '').astype(str).str.lower()
-            mascara = pd.Series(False, index=dataframe.index)
+    remaining = LIMIT - st.session_state[usage_key]
+    user_input = st.chat_input(f"{placeholder} ({remaining} restantes)", key=f"ci_{tab_key}")
+
+    if not user_input:
+        return
+
+    if not llm_ready():
+        st.error("Ollama no responde. Verifica que esté corriendo en el host configurado.")
+        return
+
+    st.session_state[usage_key] += 1
+    st.session_state[msgs_key].append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    # RAG local: buscar inmuebles relevantes
+    ctx_str = ""
+    if ctx_df is not None and not ctx_df.empty:
+        q = user_input.lower()
+        palabras = [w for w in re.findall(r"\w+", q) if len(w) > 3]
+        if palabras and "ubicacion_clean" in ctx_df.columns:
+            mask = pd.Series(False, index=ctx_df.index)
             for p in palabras:
-                mascara = mascara | matriz_busqueda.str.contains(p, na=False)
-            return dataframe[mascara].sort_values(by='rentabilidad_potencial', ascending=False).head(5)
-
-        df_rag = busqueda_rag_local(user_input, df_inmuebles)
-        dict_inmuebles = df_rag[['id_original', 'ubicacion_clean', 'precio_num', 'rentabilidad_potencial']].to_dict(orient='records')
-        
-        system_prompt = f"""
-        Eres un asesor estratégico de Real State Analyst. 
-        CONTEXTO DEL CLIENTE ACTUAL: {json.dumps(session_context)}
-        INMUEBLES RELEVANTES EN PORTAFOLIO: {json.dumps(dict_inmuebles)}
-        
-        REGLAS CRÍTICAS DE COMPORTAMIENTO:
-        1. SOLO HABLA DE BIENES RAÍCES E INVERSIONES INMOBILIARIAS.
-        2. Si el usuario pregunta sobre otros temas (política, cocina, deportes, chistes, programación, etc.), responde cortésmente: 
-           "Lo siento, soy un asesor especializado exclusivamente en el sector inmobiliario y no tengo información sobre ese tema. ¿Puedo ayudarte con alguna duda sobre tu inversión o presupuesto?"
-        3. Usa los datos del cliente para personalizar la respuesta.
-        4. No reveles que eres un bot a menos que te pregunten.
-        5. Tu entrenamiento es hasta {FECHA_ENTRENAMIENTO}.
-        """
-        
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            full_response = ""
-            try:
-                msg_history = [{"role": "system", "content": system_prompt}]
-                msg_history.extend([{"role": m["role"], "content": m["content"]} for m in st.session_state.messages[-6:]])
-                response = llm_client.chat.completions.create(model=LLM_MODEL, messages=msg_history, stream=True)
-                for chunk in response:
-                    delta = chunk.choices[0].delta.content
-                    if delta:
-                        full_response += delta
-                        message_placeholder.markdown(full_response + "▌")
-                message_placeholder.markdown(full_response)
-            except Exception as e:
-                full_response = f"⚠️ Error LLM: {e}"
-                message_placeholder.markdown(full_response)
-        
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
-
-# ---------------------------------------------------------
-# Apartado 1: Asesor Inmobiliario
-# ---------------------------------------------------------
-with tab1:
-    st.header("📍 Asesor Inmobiliario: Filtros Avanzados")
-    mostrar_disclaimer()
-    
-    with st.expander("💳 Configuración Financiera", expanded=True):
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            cap_endeudamiento = st.number_input("Capacidad de Endeudamiento Mensual (COP)", min_value=0, value=2000000, step=100000)
-            st.session_state.capacidad_endeudamiento = cap_endeudamiento
-        with col_b:
-            prestamo_solicitado = st.number_input("Monto de Préstamo Bancario (COP)", min_value=0, value=150000000, step=10000000)
-            st.session_state.prestamo_solicitado = prestamo_solicitado
-        with col_c:
-            tasa_interes = st.number_input("Tasa de Interés Efectiva Anual (%)", min_value=0.0, max_value=30.0, value=12.0, step=0.1)
-            st.session_state.tasa_interes = tasa_interes
-
-    with st.expander("🔍 Filtros de Ubicación y Presupuesto", expanded=True):
-        # Filtro de Regiones Dinámico
-        regiones_disp = sorted(df_inmuebles['ubicacion_clean'].unique())
-        regiones_sel = st.multiselect("Selecciona Regiones / Ciudades de interés", options=regiones_disp, default=[])
-        
-        # Lógica de Presupuesto
-        monto_total_max = prestamo_solicitado / 0.7 # Asumiendo financiación del 70%
-        
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            st.write(f"**Límite Financiero (70%):** ${monto_total_max:,.0f} COP")
-        
-        # Slider de rango de precio robusto
-        max_limit = float(max(monto_total_max, df_inmuebles['precio_num'].max()))
-        p_range = st.slider(
-            "Filtrar por Rango de Precio (COP)",
-            min_value=0.0,
-            max_value=max_limit,
-            value=(0.0, float(monto_total_max)),
-            step=5000000.0,
-            format="$%d"
-        )
-        p_min, p_max = p_range
-
-    # Lógica de Validación Financiera Básica
-    tasa_mensual = (1 + tasa_interes/100)**(1/12) - 1
-    plazo_meses = 240
-    cuota_estimada = prestamo_solicitado * (tasa_mensual * (1 + tasa_mensual)**plazo_meses) / ((1 + tasa_mensual)**plazo_meses - 1)
-    
-    if cuota_estimada > cap_endeudamiento:
-        st.warning(f"⚠️ Cuota estimada (${cuota_estimada:,.0f}) supera tu capacidad.")
-    
-    # Filtrado Dinámico
-    query_masked = df_inmuebles[
-        (df_inmuebles['precio_num'] >= p_min) & 
-        (df_inmuebles['precio_num'] <= p_max)
-    ]
-    
-    if regiones_sel:
-        query_masked = query_masked[query_masked['ubicacion_clean'].isin(regiones_sel)]
-
-    candidatos = query_masked.sort_values(by='rentabilidad_potencial', ascending=False).head(15)
-    
-    if not candidatos.empty:
-        st.subheader("Top Candidatos para ti:")
-        st.dataframe(
-            candidatos[['ubicacion_clean', 'precio_num', 'area_m2', 'rentabilidad_potencial', 'id_original']].style.format({
-                "precio_num": "${:,.0f}",
-                "rentabilidad_potencial": "{:.2f}%"
-            }),
-            use_container_width=True,
-            hide_index=True
-        )
-        st.session_state.target_properties = candidatos
-    else:
-        st.error("No encontramos inmuebles en nuestro portafolio que se ajusten a este presupuesto.")
-
-    render_contextual_chat("Perfil Financiero")
-
-# ---------------------------------------------------------
-# Apartado 2: Asesor de Inversión
-# ---------------------------------------------------------
-with tab2:
-    st.header("📈 Asesor de Inversión")
-    mostrar_disclaimer()
-    
-    if "target_properties" in st.session_state and not st.session_state.target_properties.empty:
-        df_inv = st.session_state.target_properties
-        st.write("Analizando los candidatos del apartado anterior...")
-        
-        # Recomendación basada en ubicación y rentabilidad
-        best_pick = df_inv.iloc[0]
-        st.success(f"### 🏆 Nuestra Recomendación: {best_pick['id_original']}")
-        st.write(f"**Ubicación:** {best_pick['ubicacion_clean']}")
-        st.write(f"**Rentabilidad Potencial:** {best_pick['rentabilidad_potencial']}%")
-        
-        st.markdown(f"""
-        #### ¿Por qué este inmueble?
-        - **Región Estratégica:** {best_pick['ubicacion_clean']} muestra una tendencia de valorización positiva.
-        - **Crecimiento:** Basado en el entrenamiento del bot, los sectores con alta rentabilidad predicha suelen tener proyectos de infraestructura cercanos (vías, comercio).
-        """)
-        
-        # Análisis por región
-        st.subheader("Rentabilidad por Zona")
-        avg_rent_region = df_inmuebles.groupby('ubicacion_clean')['rentabilidad_potencial'].mean().sort_values(ascending=False).reset_index()
-        fig_rent = px.bar(avg_rent_region.head(10), x='ubicacion_clean', y='rentabilidad_potencial', color='rentabilidad_potencial',
-                         title="Zonas con Mayor Plusvalía Proyectada",
-                         color_continuous_scale='RdYlGn')
-        st.plotly_chart(fig_rent, use_container_width=True)
-        
-        render_contextual_chat("Opciones de Inversión")
-    else:
-        st.info("Primero ingresa tus datos en el **Apartado 1** para recibir recomendaciones de inversión personalizadas.")
-
-# ---------------------------------------------------------
-# Apartado 3: Visión de Compra (Revamped)
-# ---------------------------------------------------------
-with tab3:
-    st.header("📊 Inteligencia de Mercado Colombia")
-    st.markdown("""
-    Esta sección ofrece una radiografía estratégica del sector inmobiliario nacional para que tomes decisiones informadas sobre tiempos y tipologías de compra.
-    """)
-    
-    if 'tipo_viv' not in df_inmuebles.columns:
-        df_inmuebles['tipo_viv'] = np.random.choice(['VIS (Interés Social)', 'No VIS'], len(df_inmuebles))
-        df_inmuebles['antiguedad'] = np.random.choice(['Nueva (Sobre Planos)', 'Antigua (Usada)'], len(df_inmuebles))
-
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Tipología de Vivienda")
-        fig_vis = px.pie(df_inmuebles, names='tipo_viv', hole=0.4, title="Participación VIS vs No VIS")
-        st.plotly_chart(fig_vis, use_container_width=True)
-        st.caption("El sector VIS sigue siendo el motor de volumen en Colombia, pero los proyectos No VIS están captando la mayor valorización en estratos 4 y 5.")
-        
-    with col2:
-        st.subheader("Estado de la Propiedad")
-        fig_ant = px.box(df_inmuebles, x='antiguedad', y='precio_num', color='antiguedad', title="Brecha de Precios: Nueva vs Usada")
-        st.plotly_chart(fig_ant, use_container_width=True)
-        st.caption("Comprar sobre planos (Nueva) permite capturar la valorización de obra, mientras que la Usada ofrece mejores ubicaciones consolidadas.")
-
-    st.divider()
-    
-    # Nueva Gráfica Estretégica: Precio por m2 Regional
-    df_inmuebles['precio_m2'] = df_inmuebles['precio_num'] / df_inmuebles['area_m2']
-    avg_m2 = df_inmuebles.groupby('ubicacion_clean')['precio_m2'].mean().sort_values().reset_index()
-    
-    st.subheader("📍 Estrategia de Costo por Metro Cuadrado")
-    fig_m2 = px.line(avg_m2.head(15), x='ubicacion_clean', y='precio_m2', markers=True, title="Eficiencia de Compra por Zona (Menor es mayor área por $)")
-    st.plotly_chart(fig_m2, use_container_width=True)
-
-    st.markdown("""
-    ### 🧭 Informe de Sectores Prometedores
-    - **Eje Cafetero:** Alta demanda de vivienda vacacional y retiro.
-    - **Barranquilla (Suroccidente):** Gran crecimiento industrial impulsando vivienda para trabajadores.
-    - **Medellín (Cerca al Túnel de Oriente):** El 'boom' de Rionegro sigue imparable por la conectividad.
-
-    **Estrategia Actual de Compra:**
-    Con tasas de interés que muestran señales de descenso gradual (aunque lento), la estrategia ganadora para 2024-2025 es **negociar sobre planos con entregas a 18+ meses**. Esto permite 'congelar' el precio de hoy para una tasa de crédito que probablemente será menor al momento del desembolso.
-    """)
-
-# ---------------------------------------------------------
-# Apartado 4: Valoración Automatizada (Vision Analyst)
-# ---------------------------------------------------------
-with tab4:
-    st.header("🏢 Valuador Digital (Perito Virtual)")
-    st.markdown("""
-    Utiliza nuestro modelo **XGBoost v2** para obtener una estimación técnica del valor de tu inmueble. 
-    *Nota: Próximamente el sistema actuará como un perito analizando imágenes para detectar calidad de acabados y estados de conservación.*
-    """)
-    
-    col_x1, col_x2 = st.columns(2)
-    with col_x1:
-        st.subheader("🖼️ Datos Auditables")
-        img_file = st.file_uploader("Sube imágenes del inmueble para análisis de acabados (Opcional)", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
-        if img_file:
-            st.image(img_file[0], caption="Archivo cargado para análisis visual futuro", use_container_width=True)
+                mask |= ctx_df["ubicacion_clean"].str.lower().str.contains(p, na=False)
+                if "city_token" in ctx_df.columns:
+                    mask |= ctx_df["city_token"].str.lower().str.contains(p, na=False)
+            sub = ctx_df[mask].sort_values("rentabilidad_potencial", ascending=False).head(5)
         else:
-            st.info("La carga de imágenes no afecta el cálculo actual, pero permite al sistema perfilar el inmueble para mejoras futuras.")
-            
-    with col_x2:
-        st.subheader("📝 Ficha Técnica")
-        v_area = st.number_input("Área m2", value=75)
-        v_habs = st.number_input("Habitaciones", value=3)
-        v_banos = st.number_input("Baños", value=2)
-        v_zona_manual = st.text_input("Zona / Barrio / Ciudad", placeholder="Ej: Chapinero Alto, Bogotá")
-        
-        if st.button("Generar Dictamen de Valor 🚀"):
-            if not v_zona_manual:
-                st.warning("Ingresa una zona para alinear el modelo con el mercado local.")
-            else:
-                with st.spinner("Alineando zona con mercado y ejecutando XGBoost..."):
-                    # 1. Alineación Semántica con LLM
-                    alignment_prompt = f"El usuario ingresó la zona: '{v_zona_manual}'. De la siguiente lista de zonas conocidas: {list(df_inmuebles['ubicacion_clean'].unique())[:20]}, ¿cuál es la más cercana geográficamente o por nivel socioeconómico? Responde solo el nombre de la zona, nada más."
-                    try:
-                        align_resp = llm_client.chat.completions.create(
-                            model=LLM_MODEL,
-                            messages=[{"role": "user", "content": alignment_prompt}]
+            sub = ctx_df.sort_values("rentabilidad_potencial", ascending=False).head(5)
+
+        cols = [c for c in ["id_original", "ubicacion_clean", "city_token",
+                             "precio_num", "area_m2", "habitaciones",
+                             "rentabilidad_potencial", "estado_inversion"] if c in sub.columns]
+        ctx_str = sub[cols].to_json(orient="records", force_ascii=False)
+
+    full_system = f"""{system_prompt}
+
+CONTEXTO DE INMUEBLES RELEVANTES (usa estos datos reales en tu respuesta):
+{ctx_str if ctx_str else 'No hay candidatos filtrados aún.'}
+
+SESIÓN ACTUAL:
+- Préstamo solicitado: ${st.session_state.get('prestamo', 0):,.0f} COP
+- Capacidad mensual: ${st.session_state.get('capacidad', 0):,.0f} COP
+- Tasa EA: {st.session_state.get('tasa', 0)}%
+- Ciudad de interés: {st.session_state.get('ciudad_interes', 'No especificada')}
+
+REGLAS CRÍTICAS:
+1. Solo habla de bienes raíces e inversiones inmobiliarias en Colombia.
+2. Cita precios, zonas y datos específicos del contexto cuando estén disponibles.
+3. Si te preguntan otro tema: "Soy un asesor especializado en bienes raíces colombianos."
+4. Siempre recuerda al usuario que tu información tiene fecha de corte {FECHA_CORTE}.
+5. Sé directo, concreto y accionable. Sin respuestas genéricas."""
+
+    with st.chat_message("assistant"):
+        placeholder_el = st.empty()
+        full = ""
+        try:
+            history = [{"role": "system", "content": full_system}]
+            history += [{"role": m["role"], "content": m["content"]}
+                        for m in st.session_state[msgs_key][-8:]]
+            resp = llm_client.chat.completions.create(
+                model=LLM_MODEL, messages=history, stream=True
+            )
+            for chunk in resp:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    full += delta
+                    placeholder_el.markdown(full + "▌")
+            placeholder_el.markdown(full)
+        except Exception as e:
+            full = f"Error de conexión con Ollama: {e}"
+            placeholder_el.markdown(full)
+
+    st.session_state[msgs_key].append({"role": "assistant", "content": full})
+
+
+# ══════════════════════════════════════════════════════════════════
+# TABS
+# ══════════════════════════════════════════════════════════════════
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Asesor Inmobiliario",
+    "Asesor de Inversión",
+    "Visión de Compra",
+    "Valoración  ⚒",
+])
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB 1 — ASESOR INMOBILIARIO
+# ══════════════════════════════════════════════════════════════════
+with tab1:
+    st.markdown("## Encuentra tu inmueble ideal")
+    st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
+
+    # ── Perfil financiero ────────────────────────────────────────
+    with st.expander("▸ Perfil financiero", expanded=True):
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            capacidad = st.number_input("Capacidad mensual (COP)", min_value=0,
+                                         value=2_500_000, step=100_000, format="%d")
+            st.session_state.capacidad = capacidad
+        with f2:
+            prestamo = st.number_input("Monto del préstamo (COP)", min_value=0,
+                                        value=250_000_000, step=5_000_000, format="%d")
+            st.session_state.prestamo = prestamo
+        with f3:
+            tasa = st.number_input("Tasa E.A. (%)", min_value=0.0, max_value=30.0,
+                                    value=12.5, step=0.1)
+            st.session_state.tasa = tasa
+
+        # Simulación hipotecaria
+        tasa_m = (1 + tasa / 100) ** (1 / 12) - 1
+        plazo  = 240
+        cuota  = prestamo * (tasa_m * (1 + tasa_m) ** plazo) / ((1 + tasa_m) ** plazo - 1) if tasa_m > 0 else prestamo / plazo
+        monto_max = prestamo / 0.7
+        viable = cuota <= capacidad
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Cuota mensual estimada", f"${cuota:,.0f}")
+        m2.metric("Presupuesto máx (70%)", f"${monto_max/1e6:.0f}M")
+        m3.metric("Interés total (20 años)", f"${(cuota*plazo - prestamo)/1e6:.0f}M")
+        m4.metric("Viabilidad", "✓ Viable" if viable else "✗ Excede capacidad")
+
+        if not viable:
+            deficit = cuota - capacidad
+            st.warning(
+                f"💡 **Recomendación financiera:** La cuota estimada supera tu capacidad en "
+                f"**${deficit:,.0f} COP/mes**. Considera: (1) reducir el monto del préstamo a "
+                f"${prestamo * (capacidad/cuota)/1e6:.0f}M, (2) ampliar el plazo a 25-30 años, "
+                f"o (3) aumentar el ahorro inicial para bajar el capital financiado."
+            )
+
+    # ── Filtros ──────────────────────────────────────────────────
+    with st.expander("▸ Filtros de búsqueda", expanded=True):
+        fc1, fc2, fc3, fc4 = st.columns([2, 1, 1, 1])
+        with fc1:
+            ciudades_disp = sorted([c for c in df["city_token"].unique() if c != "otra_ciudad"])
+            ciudad_sel = st.multiselect("Ciudad / región", options=ciudades_disp)
+            st.session_state.ciudad_interes = ", ".join(ciudad_sel) if ciudad_sel else "No especificada"
+        with fc2:
+            tipos_disp = sorted([t for t in df["tipo_inmueble"].unique()
+                                  if t not in ("desconocido", "otro", "nan")])
+            tipo_sel = st.multiselect("Tipo", options=tipos_disp)
+        with fc3:
+            habs_min = st.selectbox("Hab. mínimas", [1, 2, 3, 4], index=1)
+        with fc4:
+            estado_sel = st.multiselect("Estado", ["nuevo", "usado"])
+
+        p_max_slider = float(min(monto_max * 1.3, df["precio_num"].quantile(0.97)))
+        precio_rango = st.slider(
+            "Rango de precio (COP)",
+            min_value=50_000_000.0,
+            max_value=p_max_slider,
+            value=(50_000_000.0, float(monto_max)),
+            step=5_000_000.0,
+            format="$%.0f",
+        )
+
+    # ── Filtrado ─────────────────────────────────────────────────
+    mask = (df["precio_num"].between(*precio_rango))
+    if ciudad_sel:
+        mask &= df["city_token"].isin(ciudad_sel)
+    if tipo_sel:
+        mask &= df["tipo_inmueble"].isin(tipo_sel)
+    if estado_sel:
+        mask &= df["estado_inmueble"].isin(estado_sel)
+    if "habitaciones" in df.columns:
+        mask &= df["habitaciones"].fillna(0) >= habs_min
+
+    candidatos = df[mask].sort_values("rentabilidad_potencial", ascending=False).head(25)
+    st.session_state.tab1_candidates = candidatos
+
+    # ── Resultados ───────────────────────────────────────────────
+    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+
+    if candidatos.empty:
+        st.error("Sin candidatos para los filtros actuales. Ajusta el rango de precio o ciudad.")
+    else:
+        res_col, chart_col = st.columns([3, 2])
+
+        with res_col:
+            st.markdown(
+                f'<div class="section-label">{len(candidatos)} candidatos encontrados</div>',
+                unsafe_allow_html=True,
+            )
+
+            display_map = {
+                "ubicacion_clean": "Zona",
+                "city_token": "Ciudad",
+                "precio_num": "Precio",
+                "area_m2": "m²",
+                "habitaciones": "Hab.",
+                "precio_predicho": "Precio modelo",
+                "rentabilidad_potencial": "Señal %",
+                "estado_inversion": "Señal",
+            }
+            cols_show = [c for c in display_map if c in candidatos.columns]
+            df_show = candidatos[cols_show].rename(columns=display_map)
+
+            fmt = {}
+            if "Precio" in df_show.columns:       fmt["Precio"]        = "${:,.0f}"
+            if "Precio modelo" in df_show.columns: fmt["Precio modelo"] = "${:,.0f}"
+            if "Señal %" in df_show.columns:       fmt["Señal %"]       = "{:+.1f}%"
+            if "m²" in df_show.columns:            fmt["m²"]            = "{:.0f}"
+
+            st.dataframe(
+                df_show.style.format(fmt).apply(
+                    lambda col: [
+                        "color:#1a6b4a;font-weight:600" if v == "Oportunidad"
+                        else "color:#8b2020;font-weight:600" if v == "Sobrevalorado"
+                        else "color:#888" for v in col
+                    ] if col.name == "Señal" else [""] * len(col), axis=0
+                ),
+                width="stretch",
+                hide_index=True,
+                height=400,
+            )
+
+            # Badge de cross-portal
+            if "num_portales" in candidatos.columns:
+                multi = candidatos[candidatos["num_portales"] > 1]
+                if not multi.empty:
+                    st.markdown(
+                        f'<div style="font-size:.75rem;color:var(--muted);margin-top:.5rem">'
+                        f'⚡ <strong>{len(multi)}</strong> candidatos aparecen en múltiples portales '
+                        f'— verifica precios para negociar.</div>',
+                        unsafe_allow_html=True,
+                    )
+
+        with chart_col:
+            st.markdown('<div class="section-label">Precio vs área — candidatos</div>',
+                        unsafe_allow_html=True)
+            fig = go.Figure()
+            for signal, color, symbol in [
+                ("Oportunidad", "#1a6b4a", "circle"),
+                ("En mercado",  "#b8935a", "square"),
+                ("Sobrevalorado", "#8b2020", "x"),
+            ]:
+                sub = candidatos[candidatos["estado_inversion"] == signal]
+                if not sub.empty:
+                    fig.add_trace(go.Scatter(
+                        x=sub["area_m2"], y=sub["precio_num"] / 1e6,
+                        mode="markers", name=signal,
+                        marker=dict(color=color, size=10, symbol=symbol,
+                                    opacity=0.8, line=dict(color="white", width=1)),
+                        text=sub["ubicacion_clean"],
+                        hovertemplate="<b>%{text}</b><br>%{x:.0f}m² · $%{y:.0f}M<extra></extra>",
+                    ))
+            dark_layout(fig, height=380,
+                        legend=dict(orientation="h", y=1.02, x=0),
+                        xaxis=dict(title="Área (m²)", gridcolor=_GRID),
+                        yaxis=dict(title="Precio (M COP)", gridcolor=_GRID))
+            st.plotly_chart(fig, width="stretch")
+
+            # Distribución de señales
+            sig_cnt = candidatos["estado_inversion"].value_counts()
+            fig2 = go.Figure(go.Pie(
+                labels=sig_cnt.index, values=sig_cnt.values, hole=0.55,
+                marker=dict(colors=["#1a6b4a", "#b8935a", "#8b2020"],
+                            line=dict(color="white", width=2)),
+                textfont=dict(family="DM Sans", size=11),
+                hovertemplate="<b>%{label}</b>: %{value}<extra></extra>",
+            ))
+            dark_layout(fig2, height=200,
+                        legend=dict(orientation="h", y=-0.1),
+                        annotations=[dict(text=f"<b>{len(candidatos)}</b>",
+                                          x=0.5, y=0.5, showarrow=False,
+                                          font=dict(size=16, family="Playfair Display"))])
+            st.plotly_chart(fig2, width="stretch")
+
+    # ── Chat ─────────────────────────────────────────────────────
+    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Consulta al asesor financiero</div>',
+                unsafe_allow_html=True)
+
+    system_t1 = """Eres un asesor financiero inmobiliario de Real Estate Analyst Colombia.
+Tu rol es ayudar al usuario a encontrar el inmueble que mejor se ajuste a su perfil de crédito.
+Analiza los candidatos del contexto y da recomendaciones concretas: zona, precio, área, señal del modelo.
+Si el perfil financiero no alcanza, da recomendaciones específicas para mejorar su capacidad de compra."""
+
+    render_chat("t1", system_t1, "¿Cuál candidato me conviene más?", candidatos if not candidatos.empty else None)
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB 2 — ASESOR DE INVERSIÓN
+# ══════════════════════════════════════════════════════════════════
+with tab2:
+    st.markdown("## Asesor de inversión")
+    st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
+
+    cands = st.session_state.get("tab1_candidates", pd.DataFrame())
+
+    if cands.empty:
+        st.info("Primero configura tu búsqueda en **Asesor Inmobiliario** para ver el análisis de inversión.")
+    else:
+        best = cands.sort_values("rentabilidad_potencial", ascending=False).iloc[0]
+
+        # ── Recomendación principal ──────────────────────────────
+        st.markdown('<div class="section-label">Recomendación del modelo</div>',
+                    unsafe_allow_html=True)
+        b1, b2, b3, b4, b5 = st.columns(5)
+        b1.metric("Ciudad", best.get("city_token", "—").title())
+        b2.metric("Precio publicado", f"${best['precio_num']/1e6:.0f}M")
+        b3.metric("Precio modelo", f"${best.get('precio_predicho', best['precio_num'])/1e6:.0f}M")
+        b4.metric("Señal", f"{best['rentabilidad_potencial']:+.1f}%")
+        b5.metric("m²", f"{best.get('area_m2', 0):.0f}")
+
+        # Inteligencia cross-portal
+        if best.get("num_portales", 1) > 1:
+            dispersion = best.get("dispersion_pct_grupo", 0)
+            precio_min = best.get("precio_min_grupo", best["precio_num"])
+            precio_max = best.get("precio_max_grupo", best["precio_num"])
+            st.success(
+                f"⚡ **Inteligencia cross-portal:** Este inmueble aparece en "
+                f"{int(best['num_portales'])} portales con precios entre "
+                f"**${precio_min/1e6:.0f}M** y **${precio_max/1e6:.0f}M** "
+                f"(dispersión {dispersion:.1f}%). "
+                f"Busca el portal más barato antes de negociar."
+            )
+
+        st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+
+        inv1, inv2 = st.columns(2)
+
+        with inv1:
+            st.markdown('<div class="section-label">Rentabilidad media por ciudad</div>',
+                        unsafe_allow_html=True)
+            zona_rent = (
+                df.groupby("city_token")["rentabilidad_potencial"]
+                .agg(["mean", "count"])
+                .reset_index()
+            )
+            zona_rent = zona_rent[zona_rent["count"] >= 10].sort_values("mean", ascending=True).tail(15)
+            zona_rent.columns = ["ciudad", "rent_media", "n"]
+
+            fig_bar = go.Figure(go.Bar(
+                x=zona_rent["rent_media"], y=zona_rent["ciudad"].str.title(),
+                orientation="h",
+                marker=dict(
+                    color=zona_rent["rent_media"],
+                    colorscale=[[0, "#8b2020"], [0.5, "#b8935a"], [1, "#1a6b4a"]],
+                    showscale=False,
+                ),
+                text=zona_rent["rent_media"].apply(lambda x: f"{x:+.1f}%"),
+                textposition="outside",
+                hovertemplate="<b>%{y}</b><br>Señal media: %{x:.1f}%<extra></extra>",
+            ))
+            dark_layout(fig_bar, height=400,
+                        xaxis=dict(showgrid=True, gridcolor=_GRID, zeroline=True,
+                                   zerolinecolor="#2c2c3a", zerolinewidth=1),
+                        yaxis=dict(showgrid=False))
+            st.plotly_chart(fig_bar, width="stretch")
+
+        with inv2:
+            st.markdown('<div class="section-label">Precio por m² por ciudad (mediana)</div>',
+                        unsafe_allow_html=True)
+            m2_ciudad = (
+                df.groupby("city_token")["precio_m2"]
+                .median().reset_index()
+                .sort_values("precio_m2", ascending=False)
+                .head(15)
+            )
+            fig_m2 = go.Figure(go.Bar(
+                x=m2_ciudad["city_token"].str.title(),
+                y=m2_ciudad["precio_m2"] / 1e6,
+                marker=dict(color="#1e1e2a"),
+                text=m2_ciudad["precio_m2"].apply(lambda x: f"${x/1e6:.1f}M"),
+                textposition="outside",
+                hovertemplate="<b>%{x}</b><br>$%{y:.2f}M/m²<extra></extra>",
+            ))
+            dark_layout(fig_m2, height=400,
+                        xaxis=dict(tickangle=-30, showgrid=False),
+                        yaxis=dict(title="M COP / m²", showgrid=True, gridcolor=_GRID))
+            st.plotly_chart(fig_m2, width="stretch")
+
+        # Top 5 candidatos de inversión
+        st.markdown('<div class="section-label">Top candidatos para inversión</div>',
+                    unsafe_allow_html=True)
+        inv_cols = [c for c in ["ubicacion_clean", "city_token", "precio_num",
+                                 "area_m2", "habitaciones", "rentabilidad_potencial",
+                                 "estado_inversion", "num_portales"] if c in cands.columns]
+        top_inv = cands[inv_cols].head(8)
+        st.dataframe(
+            top_inv.rename(columns={
+                "ubicacion_clean": "Zona", "city_token": "Ciudad",
+                "precio_num": "Precio", "area_m2": "m²",
+                "habitaciones": "Hab.", "rentabilidad_potencial": "Señal %",
+                "estado_inversion": "Señal", "num_portales": "Portales",
+            }).style.format({
+                "Precio": "${:,.0f}", "m²": "{:.0f}", "Señal %": "{:+.1f}%"
+            }),
+            width="stretch", hide_index=True,
+        )
+
+    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Consulta al asesor de inversión</div>',
+                unsafe_allow_html=True)
+    system_t2 = """Eres un asesor de inversión inmobiliaria de Real Estate Analyst Colombia.
+Ayudas al usuario a decidir qué inmueble comprar considerando: zona de crecimiento, señal del modelo,
+inteligencia cross-portal (precios en múltiples portales), y perspectivas regionales de valorización.
+Cita datos concretos del contexto. Recuerda siempre que tu información tiene fecha de corte."""
+    render_chat("t2", system_t2, "¿Cuál zona tiene mejor perspectiva?", cands if not cands.empty else df.head(20))
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB 3 — VISIÓN DE COMPRA
+# ══════════════════════════════════════════════════════════════════
+with tab3:
+    st.markdown("## Inteligencia de mercado Colombia")
+    st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
+
+    # ── VIS vs No VIS ────────────────────────────────────────────
+    st.markdown('<div class="section-label">Segmentación del mercado</div>',
+                unsafe_allow_html=True)
+    v1, v2 = st.columns(2)
+
+    with v1:
+        # Proxy VIS: precio < $250M
+        df["segmento"] = df["precio_num"].apply(
+            lambda x: "VIS (≤$250M)" if x <= 250_000_000 else "No VIS (>$250M)"
+        )
+        seg_cnt = df["segmento"].value_counts()
+        fig_vis = go.Figure(go.Pie(
+            labels=seg_cnt.index, values=seg_cnt.values, hole=0.5,
+            marker=dict(colors=["#1a6b4a", "#1a4a8b"],
+                        line=dict(color="white", width=2)),
+            textfont=dict(family="DM Sans", size=12),
+            hovertemplate="<b>%{label}</b><br>%{value:,} inmuebles (%{percent})<extra></extra>",
+        ))
+        dark_layout(fig_vis, height=280,
+                    title=dict(text="VIS vs No VIS", font=dict(family="Playfair Display", size=14, color=_TEXT)),
+                    legend=dict(orientation="h", y=-0.15, font=dict(color=_TEXT)))
+        st.plotly_chart(fig_vis, width="stretch")
+        st.caption("Proxy: inmuebles ≤$250M clasificados como VIS. No incluye estrato ni destinación oficial.")
+
+    with v2:
+        # Nuevo vs Usado
+        if "estado_inmueble" in df.columns:
+            est_cnt = df["estado_inmueble"].value_counts().head(4)
+            fig_est = go.Figure(go.Bar(
+                x=est_cnt.index.str.title(), y=est_cnt.values,
+                marker=dict(color=["#1a6b4a", "#b8935a", "#1a4a8b", "#8b2020"][:len(est_cnt)]),
+                text=est_cnt.values, textposition="outside",
+                hovertemplate="<b>%{x}</b>: %{y:,}<extra></extra>",
+            ))
+            dark_layout(fig_est, height=280,
+                        title=dict(text="Nuevo vs Usado", font=dict(family="Playfair Display", size=14, color=_TEXT)),
+                        xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor=_GRID))
+            st.plotly_chart(fig_est, width="stretch")
+
+    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+
+    # ── Precio por m² por ciudad ─────────────────────────────────
+    st.markdown('<div class="section-label">Eficiencia de compra — precio por m² por ciudad</div>',
+                unsafe_allow_html=True)
+    st.caption("Ciudades con menor precio/m² ofrecen más área por peso invertido.")
+
+    m2_df = (
+        df.groupby("city_token")
+        .agg(precio_m2_mediano=("precio_m2", "median"), n=("precio_num", "count"))
+        .reset_index()
+    )
+    m2_df = m2_df[m2_df["n"] >= 10].sort_values("precio_m2_mediano", ascending=False).head(20)
+
+    fig_m2bar = go.Figure(go.Bar(
+        x=m2_df["city_token"].str.title(),
+        y=m2_df["precio_m2_mediano"] / 1e6,
+        marker=dict(
+            color=m2_df["precio_m2_mediano"],
+            colorscale=[[0, "#e8f4ef"], [1, "#0a3d28"]],
+            showscale=False,
+        ),
+        text=m2_df["precio_m2_mediano"].apply(lambda x: f"${x/1e6:.1f}M"),
+        textposition="outside",
+        hovertemplate="<b>%{x}</b><br>${%{y:.2f}M / m²<extra></extra>",
+    ))
+    dark_layout(fig_m2bar, height=320,
+                xaxis=dict(tickangle=-35, showgrid=False),
+                yaxis=dict(title="M COP / m²", showgrid=True, gridcolor=_GRID))
+    st.plotly_chart(fig_m2bar, width="stretch")
+
+    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+
+    # ── Señal de sobrecalentamiento ──────────────────────────────
+    st.markdown('<div class="section-label">Señal de mercado — ¿es buen momento para comprar?</div>',
+                unsafe_allow_html=True)
+    st.caption(
+        "Porcentaje de inmuebles clasificados como 'Sobrevalorado' por ciudad. "
+        "Alto % puede indicar precios inflados respecto al modelo — mejor esperar o negociar agresivamente."
+    )
+
+    sobrev = (
+        df.groupby("city_token")["estado_inversion"]
+        .apply(lambda x: (x == "Sobrevalorado").mean() * 100)
+        .reset_index()
+    )
+    sobrev.columns = ["ciudad", "pct_sobre"]
+    oport = (
+        df.groupby("city_token")["estado_inversion"]
+        .apply(lambda x: (x == "Oportunidad").mean() * 100)
+        .reset_index()
+    )
+    oport.columns = ["ciudad", "pct_oport"]
+    signal_df = sobrev.merge(oport, on="ciudad").sort_values("pct_sobre", ascending=False).head(20)
+
+    fig_signal = go.Figure()
+    fig_signal.add_trace(go.Bar(
+        name="Sobrevalorado %", x=signal_df["ciudad"].str.title(), y=signal_df["pct_sobre"],
+        marker_color="#8b2020", opacity=0.85,
+        hovertemplate="<b>%{x}</b><br>Sobrevalorado: %{y:.0f}%<extra></extra>",
+    ))
+    fig_signal.add_trace(go.Bar(
+        name="Oportunidad %", x=signal_df["ciudad"].str.title(), y=signal_df["pct_oport"],
+        marker_color="#1a6b4a", opacity=0.85,
+        hovertemplate="<b>%{x}</b><br>Oportunidad: %{y:.0f}%<extra></extra>",
+    ))
+    fig_signal.add_hline(y=40, line=dict(color="#8b2020", width=1, dash="dot"),
+                          annotation_text="Alerta sobrevaluación 40%",
+                          annotation_font=dict(size=9, color="#8b2020", family="DM Mono"))
+    dark_layout(fig_signal, height=340,
+                barmode="group",
+                legend=dict(orientation="h", y=1.02),
+                xaxis=dict(tickangle=-35, showgrid=False),
+                yaxis=dict(title="%", showgrid=True, gridcolor=_GRID))
+    st.plotly_chart(fig_signal, width="stretch")
+
+    # ── Análisis editorial ───────────────────────────────────────
+    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Análisis editorial — sectores prometedores</div>',
+                unsafe_allow_html=True)
+
+    ea1, ea2 = st.columns(2)
+    with ea1:
+        st.markdown("""
+**Ciudades intermedias en auge**
+
+Rionegro, Chía, Cajicá y Envigado muestran alta actividad de oferta con precio/m² aún por debajo
+de sus ciudades ancla (Medellín y Bogotá). La conectividad vial y el crecimiento de zonas industriales
+y logísticas los posicionan como destinos de valorización para el mediano plazo.
+
+**VIS: presión de demanda sostenida**
+
+Con más del 25% de la oferta en rangos VIS, la demanda estructural de vivienda social sigue siendo
+el motor de volumen. Sin embargo, la financiación con tasas actuales reduce la capacidad de compra
+efectiva — oportunidad para quienes tienen acceso a subsidios o crédito subsidiado.
+        """)
+
+    with ea2:
+        st.markdown("""
+**¿Comprar ahora o esperar?**
+
+Con una dispersión cross-portal promedio de {:.1f}% en los inmuebles monitoreados, existe margen
+de negociación real frente a los precios publicados. La señal del modelo sugiere que aproximadamente
+**{:.0f}%** de los inmuebles actuales están por encima del valor que el mercado justifica —
+lo que favorece a compradores que negocian agresivamente.
+
+**Recomendación:** Para vivienda propia, el mejor momento es cuando el perfil financiero es viable —
+no el momento de mercado. Para inversión, prioriza ciudades con señal de oportunidad alta y
+bajo porcentaje de sobrevaloración.
+        """.format(
+            df["dispersion_pct_grupo"].median() if "dispersion_pct_grupo" in df.columns else 0,
+            (df["estado_inversion"] == "Sobrevalorado").mean() * 100,
+        ))
+
+    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Consulta sobre el mercado</div>', unsafe_allow_html=True)
+    system_t3 = """Eres un analista de mercado inmobiliario de Real Estate Analyst Colombia.
+Respondes preguntas sobre tendencias de mercado, VIS vs No VIS, nuevo vs usado,
+qué ciudades son prometedoras y si es buen momento para comprar.
+Basa tus respuestas en los datos del contexto. Sé analítico y concreto.
+Siempre menciona la fecha de corte de tus datos."""
+    render_chat("t3", system_t3, "¿Es buen momento para comprar en Medellín?", df.sample(min(100, len(df))))
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB 4 — VALORACIÓN
+# ══════════════════════════════════════════════════════════════════
+with tab4:
+    st.markdown("## Valoración de inmueble")
+    st.markdown(
+        '<div class="disclaimer">'
+        '<strong>Apartado en construcción ⚒</strong> — La valoración por características ya funciona. '
+        'El análisis de imágenes usa el LLM para descripción cualitativa de acabados; '
+        'el número de valoración viene del modelo XGBoost, no de la imagen.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    val1, val2 = st.columns([1, 1])
+
+    with val1:
+        st.markdown('<div class="section-label">Ficha técnica del inmueble</div>',
+                    unsafe_allow_html=True)
+        v_area  = st.number_input("Área (m²)", min_value=20, max_value=1000, value=80)
+        v_habs  = st.number_input("Habitaciones", min_value=1, max_value=10, value=3)
+        v_banos = st.number_input("Baños", min_value=1, max_value=8, value=2)
+        v_gar   = st.number_input("Garajes", min_value=0, max_value=5, value=1)
+
+        ciudades_val = sorted(df["city_token"].unique())
+        v_ciudad = st.selectbox("Ciudad", ciudades_val,
+                                 index=ciudades_val.index("bogota") if "bogota" in ciudades_val else 0)
+        v_tipo   = st.selectbox("Tipo", ["apartamento", "casa", "oficina", "local_comercial", "otro"])
+        v_estado = st.selectbox("Estado", ["usado", "nuevo"])
+
+        st.markdown('<div class="section-label" style="margin-top:1rem">Imágenes (opcional)</div>',
+                    unsafe_allow_html=True)
+        imgs = st.file_uploader(
+            "Sube 1-5 fotos del inmueble para análisis de acabados",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=True,
+        )
+        if imgs:
+            cols_imgs = st.columns(min(len(imgs), 3))
+            for i, img in enumerate(imgs[:3]):
+                cols_imgs[i].image(img, width="stretch")
+
+        btn_valorar = st.button("Generar valoración ◈")
+
+    with val2:
+        st.markdown('<div class="section-label">Resultado de valoración</div>',
+                    unsafe_allow_html=True)
+
+        if btn_valorar:
+            with st.spinner("Ejecutando modelo XGBoost..."):
+                try:
+                    if bundle is None:
+                        st.error("Modelo no disponible.")
+                    else:
+                        row = {
+                            "area_m2": float(v_area),
+                            "habitaciones": float(v_habs),
+                            "banos": float(v_banos),
+                            "garajes": float(v_gar),
+                            "tipo_inmueble": v_tipo,
+                            "estado_inmueble": v_estado,
+                            "fuente": "manual_input",
+                            "city_token": v_ciudad,
+                            "precio_num": 0,
+                            "titulo": f"{v_tipo} {v_ciudad}",
+                            "ubicacion_norm": v_ciudad,
+                            "ubicacion_clean": v_ciudad,
+                        }
+
+                        result = score_single(row, bundle)
+
+                        if "error" in result:
+                            st.error(f"Error en valoración: {result['error']}")
+                        else:
+                            valor_pred = result["valor_predicho"]
+                            rango_low  = result["rango_low"]
+                            rango_high = result["rango_high"]
+                            mape_pct   = result["mape_pct"]
+
+                            st.metric("Valoración estimada", f"${valor_pred/1e6:.0f}M COP")
+                            st.markdown(
+                                f'<div style="font-size:.8rem;color:var(--muted);margin-top:-.5rem">'
+                                f'Rango de confianza (±MAPE {mape_pct:.0f}%): '
+                                f'<strong>${rango_low/1e6:.0f}M – ${rango_high/1e6:.0f}M</strong></div>',
+                                unsafe_allow_html=True,
+                            )
+                            st.metric("Precio estimado / m²", f"${result['precio_m2_pred']/1e6:.2f}M")
+
+                            local = df[df["city_token"] == v_ciudad]["precio_num"]
+                            if not local.empty:
+                                pct = (valor_pred - local.median()) / local.median() * 100
+                                st.metric(
+                                    f"vs mediana {v_ciudad.title()}",
+                                    f"{pct:+.1f}%",
+                                    delta=f"Mediana ciudad: ${local.median()/1e6:.0f}M",
+                                )
+
+                except Exception as e:
+                    st.error(f"Error en valoración: {e}")
+
+            # ── Análisis de imagen con LLM ───────────────────────
+            if imgs and llm_ready():
+                with st.spinner("Analizando acabados con IA..."):
+                    import base64
+                    img_contents = []
+                    for img in imgs[:3]:
+                        b64 = base64.b64encode(img.read()).decode()
+                        ext = img.name.split(".")[-1].lower()
+                        mime = f"image/{'jpeg' if ext in ('jpg','jpeg') else ext}"
+                        img_contents.append({"type": "image_url",
+                                              "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
+                    img_contents.append({
+                        "type": "text",
+                        "text": (
+                            f"Analiza estas imágenes de un {v_tipo} en {v_ciudad.title()} Colombia "
+                            f"de {v_area}m², {v_habs} hab., {v_banos} baños. "
+                            "Describe: 1) Calidad de acabados (pisos, paredes, cocina, baños), "
+                            "2) Estado de conservación, "
+                            "3) Estimación de estrato socioeconómico (1-6), "
+                            "4) Si los acabados son consistentes con el rango de precio estimado. "
+                            "Sé concreto y objetivo. Máximo 150 palabras."
                         )
-                        zona_alineada = align_resp.choices[0].message.content.strip()
-                    except:
-                        zona_alineada = "Desconocida"
+                    })
 
-                    # 2. Ejecutar Predicción
-                    # Creamos un mini-dataframe para el modelo con las columnas mapeadas en apply_ml_scoring
-                    mock_data = pd.DataFrame([{
-                        'area_m2': v_area,
-                        'habitaciones': v_habs,
-                        'banos': v_banos,
-                        'estado_inmueble': 'usado',
-                        'tipo_inmueble': 'apartamento',
-                        'fuente': 'manual_input',
-                        'ubicacion_clean': zona_alineada,
-                        'texto_completo': f"{v_zona_manual} {v_area}m2"
-                    }])
-                    
-                    # Para el modelo real, necesitamos que las columnas sean idénticas a las esperadas
                     try:
-                        features_val = ['area_m2', 'habitaciones', 'banos', 'estado_inmueble', 'tipo_inmueble', 'fuente', 'texto_completo']
-                        valor_pred = ml_model.predict(mock_data[features_val])[0]
-                        st.success(f"### Valor Predicho: ${valor_pred:,.0f} COP")
-                        st.write(f"**Alineación de Mercado:** Se calculó bajo el comportamiento de la zona: `{zona_alineada}`.")
-                        st.info("Este valor es una estimación estadística. Un dictamen pericial completo requiere inspección física.")
+                        resp = llm_client.chat.completions.create(
+                            model=LLM_MODEL,
+                            messages=[{"role": "user", "content": img_contents}],
+                        )
+                        analysis = resp.choices[0].message.content
+                        st.markdown('<div class="section-label" style="margin-top:1rem">Análisis de acabados (IA)</div>',
+                                    unsafe_allow_html=True)
+                        st.markdown(
+                            f'<div style="background:var(--surface2);border:1px solid var(--border);'
+                            f'border-left:4px solid var(--gold);padding:1rem;font-size:.85rem;'
+                            f'line-height:1.7;border-radius:0 2px 2px 0">{analysis}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.caption(
+                            "⚠️ El análisis de imágenes es orientativo. "
+                            "El valor estimado proviene del modelo estadístico, no de las fotos."
+                        )
                     except Exception as e:
-                        # Fallback por si el predict falla por columnas
-                        valor_est = (v_area * 5500000) + (v_habs * 12000000)
-                        st.metric("Valor Estimado (Aprox)", f"${valor_est:,.0f} COP")
-                        st.caption(f"Error técnico en modelo: {e}")
+                        st.warning(f"Análisis de imagen no disponible: {e}")
 
-# ==========================================
-# Sidebar Cleanup
-# ==========================================
-with st.sidebar:
-    st.markdown("### Estado del sistema")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric(
-            label="Modelo MAPE",
-            value=badge["mape"],
-            help="Error porcentual promedio del modelo de precios"
-        )
-    with col2:
-        st.metric(
-            label="Último deploy",
-            value=badge["freshness"],
-        )
-
-    if badge["train_size"]:
-        st.caption(f"Entrenado con {badge['train_size']:,} inmuebles")
-
-    if badge["is_fallback"]:
-        st.warning("Usando modelo anterior (el campeón falló al cargar)")
-    if badge["is_legacy"]:
-        st.info("Usando modelo legacy — ejecuta el orquestador para actualizar")
-
-    st.caption(f"Modelo: `{badge['model_name']}`")
-    st.divider()
-    st.info(f"LLM: **{LLM_MODEL}**")
-    if st.button("Limpiar historial de chat"):
-        st.session_state.messages = []
-        st.rerun()
+        else:
+            st.markdown(
+                '<div style="background:white;border:1px solid var(--border);'
+                'padding:2rem;text-align:center;color:var(--muted);font-size:.88rem;'
+                'border-radius:2px">'
+                'Completa la ficha técnica y presiona<br>'
+                '<strong style="color:var(--ink)">Generar valoración ◈</strong>'
+                '</div>',
+                unsafe_allow_html=True,
+            )

@@ -21,10 +21,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from config.settings import S3_BRONZE_PREFIX
 from src.utils.s3_connector import S3Connector
 
 logger = logging.getLogger(__name__)
-CHECKPOINT_PREFIX = "checkpoints"
+CHECKPOINT_PREFIX = f"{S3_BRONZE_PREFIX}/checkpoints"
 
 
 class CheckpointManager:

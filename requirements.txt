@@ -9,5 +9,5 @@ playwright
 pyarrow
 s3fs
 python-dotenv
-xgboost
+xgboost==1.7.3
 scikit-learn

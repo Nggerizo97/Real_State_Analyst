@@ -1,0 +1,9 @@
+.git
+.github
+.env
+.streamlit
+__pycache__
+notebooks
+infrastructure
+*.pyc
+tests

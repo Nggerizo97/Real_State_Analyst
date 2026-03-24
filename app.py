@@ -37,59 +37,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── CSS — tema oscuro completo ─────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&family=DM+Mono:wght@400;500&display=swap');
-
-:root {
-    --ink:#e8e4dc; --paper:#13131a; --gold:#b8935a; --gold-lt:#d4aa72;
-    --slate:#1e1e2a; --surface:#16161f; --surface2:#1e1e2a; --surface3:#252535;
-    --muted:#7a7a8c; --border:#2e2e40; --border2:#3a3a50;
-    --green:#2a9b6a; --red:#c44040; --green-lt:rgba(26,107,74,.18); --red-lt:rgba(139,32,32,.18);
-    --blue:#2a6ab8; --blue-lt:rgba(26,74,139,.18);
-}
-html,body,[class*="css"]{font-family:'DM Sans',sans-serif;background:var(--paper)!important;color:var(--ink)!important}
-.stApp{background:var(--paper)!important}
-.block-container{padding:2rem 2.5rem 4rem!important;max-width:1400px}
-h1{font-family:'Playfair Display',serif!important;font-weight:900!important;font-size:2.2rem!important;letter-spacing:-.02em;color:var(--ink)!important}
-h2{font-family:'Playfair Display',serif!important;font-weight:700!important;font-size:1.4rem!important;color:var(--ink)!important}
-h3{font-family:'DM Sans',sans-serif!important;font-weight:500!important;font-size:.85rem!important;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)!important}
-p,li,label,span{color:var(--ink)!important}
-.stMarkdown{color:var(--ink)!important}
-caption{color:var(--muted)!important;font-size:.75rem!important}
-.stTabs [data-baseweb="tab-list"]{gap:0;border-bottom:2px solid var(--border2);background:transparent}
-.stTabs [data-baseweb="tab"]{font-family:'DM Sans',sans-serif;font-size:.75rem;font-weight:500;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:.7rem 1.4rem;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;background:transparent}
-.stTabs [aria-selected="true"]{color:var(--gold)!important;border-bottom:2px solid var(--gold)!important;font-weight:700!important}
-[data-testid="stMetric"]{background:var(--surface2)!important;border:1px solid var(--border)!important;border-top:3px solid var(--gold)!important;padding:1.1rem 1.2rem;border-radius:2px}
-[data-testid="stMetricLabel"]{font-size:.65rem!important;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)!important;font-weight:500}
-[data-testid="stMetricValue"]{font-family:'Playfair Display',serif!important;font-size:1.6rem!important;color:var(--ink)!important}
-[data-testid="stMetricDelta"]{color:var(--muted)!important}
-.stButton>button{font-family:'DM Sans',sans-serif;font-size:.75rem;font-weight:500;letter-spacing:.1em;text-transform:uppercase;background:var(--gold);color:#0a0a0f;border:none;border-radius:2px;padding:.65rem 1.6rem;transition:background .2s}
-.stButton>button:hover{background:var(--gold-lt);color:#0a0a0f;border:none}
-[data-testid="stDataFrame"]{border:1px solid var(--border)!important;border-radius:2px!important}
-.stNumberInput>div>div>input,.stTextInput>div>div>input,.stSelectbox>div>div,.stMultiSelect>div>div{border-radius:2px!important;border-color:var(--border)!important;background:var(--surface3)!important;color:var(--ink)!important;font-family:'DM Sans',sans-serif!important}
-.streamlit-expanderHeader{background:var(--surface2)!important;border:1px solid var(--border)!important;border-radius:2px!important;color:var(--muted)!important;font-family:'DM Sans',sans-serif!important;font-size:.8rem!important;font-weight:500!important;letter-spacing:.08em;text-transform:uppercase}
-.streamlit-expanderContent{background:var(--surface)!important;border:1px solid var(--border)!important;border-top:none!important;border-radius:0 0 2px 2px!important;padding:1rem!important}
-.stWarning{background:rgba(184,147,90,.12)!important;border-color:var(--gold)!important}
-.stInfo{background:rgba(42,106,184,.12)!important;border-color:var(--blue)!important}
-.stError{background:rgba(196,64,64,.12)!important;border-color:var(--red)!important}
-.stSuccess{background:rgba(42,155,106,.12)!important;border-color:var(--green)!important}
-[data-testid="stSidebar"]{background:#0d0d14!important}
-[data-testid="stSidebar"] *{color:#c8c4bc!important}
-[data-testid="stSidebar"] [data-testid="stMetric"]{background:rgba(255,255,255,.05)!important;border-color:rgba(255,255,255,.08)!important;border-top-color:var(--gold)!important}
-[data-testid="stSidebar"] [data-testid="stMetricValue"]{color:white!important}
-[data-testid="stSidebar"] .stButton>button{background:transparent;border:1px solid rgba(255,255,255,.15);color:#c8c4bc;width:100%}
-[data-testid="stSidebar"] .stButton>button:hover{background:rgba(255,255,255,.07);border-color:var(--gold)}
-.stChatMessage{background:var(--surface2)!important;border-radius:2px!important}
-[data-testid="stChatMessageContent"]{color:var(--ink)!important}
-.gold-rule{height:1px;background:linear-gradient(90deg,var(--gold),transparent);margin:1.4rem 0;border:none}
-.section-label{font-family:'DM Sans',sans-serif;font-size:.62rem;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--gold);border-left:3px solid var(--gold);padding-left:.6rem;margin-bottom:.4rem}
-.disclaimer{background:rgba(184,147,90,.08);border-left:3px solid var(--gold);padding:.75rem 1rem;font-size:.8rem;color:var(--muted);border-radius:0 2px 2px 0;margin-bottom:1rem;line-height:1.6}
-.ticker{background:#0d0d14;color:var(--gold);padding:.45rem 2.5rem;font-family:'DM Mono',monospace;font-size:.8rem;letter-spacing:.04em;margin:-2rem -2.5rem 2rem;overflow:hidden;white-space:nowrap;border-bottom:1px solid var(--border)}
-[data-testid="stFileUploader"]{background:var(--surface3)!important;border:1px dashed var(--border2)!important;border-radius:2px!important}
-</style>
-""", unsafe_allow_html=True)
+with open("style.css") as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 # Constantes de color para gráficas — NUNCA usar "white" en paper_bgcolor
 _BG   = "#1e1e2a"
@@ -435,10 +384,11 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("Limpiar conversación"):
-        for k in ["messages", "chat_usage", "tab1_candidates"]:
+    if st.button("Limpiar conversación y caché"):
+        for k in ["messages", "chat_usage", "tab1_candidates", "master_db"]:
             if k in st.session_state:
                 del st.session_state[k]
+        st.cache_data.clear()
         st.rerun()
     st.markdown(
         '<div style="font-size:.62rem;color:rgba(255,255,255,.22);margin-top:1.2rem;line-height:1.6">'
@@ -656,7 +606,7 @@ with tab1:
 
     # ── Filtros ──────────────────────────────────────────────────
     with st.expander("▸ Filtros de búsqueda", expanded=True):
-        fc_geo1, fc_geo2, fc_geo3 = st.columns(3)
+        fc_geo1, fc_geo2, fc_geo3, fc_geo4 = st.columns(4)
         with fc_geo1:
             mercados_disp = sorted([m for m in df["market_token"].unique()
                                      if m and str(m) not in ("nan", "otra_ciudad_metropolitana")])
@@ -681,6 +631,14 @@ with tab1:
             else:
                 comuna_disp = []
             comuna_sel = st.multiselect("Comuna / Zona", options=comuna_disp)
+
+        with fc_geo4:
+            if comuna_sel and "sector_mercado" in df.columns:
+                sectores_f = df[df["comuna_mercado"].isin(comuna_sel)]["sector_mercado"].unique()
+                sector_disp = sorted([s for s in sectores_f if pd.notna(s) and s != "sector_otra"])
+            else:
+                sector_disp = []
+            sector_sel = st.multiselect("Sector / Barrio", options=sector_disp)
 
         fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 1])
         with fc1:
@@ -713,6 +671,8 @@ with tab1:
         mask &= df["city_token"].isin(ciudad_sel)
     if 'comuna_sel' in locals() and comuna_sel:
         mask &= df["comuna_mercado"].isin(comuna_sel)
+    if 'sector_sel' in locals() and sector_sel:
+        mask &= df["sector_mercado"].isin(sector_sel)
     if tipo_sel:
         mask &= df["tipo_inmueble"].isin(tipo_sel)
     if estado_sel:
@@ -1072,6 +1032,39 @@ with tab3:
 
     st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
 
+    # ── Top Sectores por Oportunidad ─────────────────────────────
+    st.markdown('<div class="section-label">Top 15 Sectores con mayor rentabilidad estructural (Oportunidad)</div>',
+                unsafe_allow_html=True)
+    st.caption("Sectores barriales con mejor señal algorítmica a nivel nacional. (Mínimo 5 ofertas)")
+
+    if "sector_mercado" in df.columns:
+        sec_df = (
+            df.groupby("sector_mercado")
+            .agg(rent_media=("rentabilidad_potencial", "mean"), n=("precio_num", "count"), pm2=("precio_m2", "median"))
+            .reset_index()
+        )
+        sec_df = sec_df[sec_df["n"] >= 5].sort_values("rent_media", ascending=False).head(15)
+        
+        if not sec_df.empty:
+            fig_sec = go.Figure(go.Bar(
+                x=sec_df["sector_mercado"].str.replace("_", " ").str.title(),
+                y=sec_df["rent_media"],
+                marker=dict(color=sec_df["rent_media"],
+                            colorscale=[[0, "#b8935a"], [1, "#1a6b4a"]], showscale=False),
+                text=sec_df["rent_media"].apply(lambda x: f"{x:+.1f}%"),
+                textposition="outside",
+                hovertemplate="<b>%{x}</b><br>Rentabilidad: %{text}<br>Ofertas: %{customdata[0]}<br>Precio/m² mediano: $%{customdata[1]:.2f}M<extra></extra>",
+                customdata=np.stack((sec_df["n"], sec_df["pm2"]/1e6), axis=-1)
+            ))
+            dark_layout(fig_sec, height=360,
+                        xaxis=dict(tickangle=-35, showgrid=False),
+                        yaxis=dict(title="Rentabilidad Media (%)", showgrid=True, gridcolor=_GRID))
+            st.plotly_chart(fig_sec, width="stretch")
+        else:
+            st.info("No hay suficientes datos a nivel sectorial con más de 5 ofertas.")
+
+    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+
     # ── Bandas de referencia (mercado_analitica) ─────────────────
     if gold_analitica is not None and "lower_bound_ref" in gold_analitica.columns:
         st.markdown('<div class="section-label">Bandas de precio por mercado (mercado_analitica)</div>',
@@ -1243,7 +1236,12 @@ with tab4:
         else:
             v_comuna = "comuna_otra"
             
-        v_sector = "sector_otra" # Removido de UI para simplicidadUX
+        df_comuna = df_ciudad[df_ciudad["comuna_mercado"] == v_comuna] if v_comuna != "comuna_otra" else df_ciudad
+        if "sector_mercado" in df.columns:
+            sectores_disp = sorted([s for s in df_comuna["sector_mercado"].unique() if pd.notna(s) and s != "sector_otra"])
+            v_sector = st.selectbox("Sector / Barrio", ["sector_otra"] + sectores_disp)
+        else:
+            v_sector = "sector_otra"
         
         v_tipo   = st.selectbox("Tipo", ["apartamento", "casa", "oficina", "local_comercial", "otro"])
         v_estado = st.selectbox("Estado", ["usado", "nuevo"])

@@ -167,7 +167,12 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
 def load_gold():
     """Lee Gold consumable + enriquece con market_token desde mercado_analitica."""
     try:
-        df = _s3_read_gold("app_inmuebles")
+        # Intento 1: Leer tabla pre-costeada (Batch Inference Databricks - Modern Data Stack)
+        df = _s3_read_gold("app_inmuebles_scored")
+        if df is None or df.empty:
+            # Intento 2: Fallback a Gold normal
+            df = _s3_read_gold("app_inmuebles")
+            
         if df is None or df.empty:
             return _dummy_df()
         return _clean_gold(df)
@@ -325,8 +330,11 @@ gold_sectorial = load_mercado_sectorial()
 gold_portales  = load_portal_operacion()
 
 if "master_db" not in st.session_state:
-    with st.spinner("Calculando señales de mercado..."):
-        st.session_state.master_db = score_dataframe(raw_df.copy(), bundle)
+    if "rentabilidad_potencial" in raw_df.columns:
+        st.session_state.master_db = raw_df.copy()
+    else:
+        with st.spinner("Calculando señales (Fallback a XGBoost local)..."):
+            st.session_state.master_db = score_dataframe(raw_df.copy(), bundle)
 
 df = st.session_state.master_db
 

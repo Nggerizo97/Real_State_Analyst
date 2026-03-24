@@ -10,6 +10,7 @@ app.py — Real Estate Analyst Colombia
 
 import io
 import json
+import os
 import re
 import warnings
 from datetime import datetime, timezone
@@ -37,8 +38,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-with open("style.css") as f:
-    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+# ── CSS & Secrets Setup ───────────────────────────────────────────
+# Intentar cargar CSS pero no crashear si falta en el repo
+if os.path.exists("style.css"):
+    with open("style.css") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+# Validar secretos mínimos antes de arrancar
+if "aws" not in st.secrets:
+    st.error("🔑 **Faltan los Secretos en Streamlit Cloud.** Ve a Settings -> Secrets y pega tu .streamlit/secrets.toml local.")
+    st.stop()
 
 # Constantes de color para gráficas — NUNCA usar "white" en paper_bgcolor
 _BG   = "#1e1e2a"

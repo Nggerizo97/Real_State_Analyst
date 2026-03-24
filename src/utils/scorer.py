@@ -27,6 +27,19 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
                 df_pred[col] = np.nan
             df_pred[col] = pd.to_numeric(df_pred[col], errors="coerce")
 
+        # --- CAPPING INTELIGENTE (Guardrails de Inferencia) ---
+        if "area_m2" in df_pred.columns:
+            m_area = df_pred["area_m2"]
+            if "banos" in df_pred.columns:
+                # Si area > 120m2, se esperan al menos 2 baños. Si area > 180m2, al menos 3
+                min_banos = np.where(m_area > 180, 3, np.where(m_area > 120, 2, 1))
+                df_pred["banos"] = np.maximum(df_pred["banos"].fillna(1), min_banos)
+            if "garajes" in df_pred.columns:
+                # Si area > 150m2, se espera al menos 1 garaje. Si area > 200m2, al menos 2
+                min_gar = np.where(m_area > 200, 2, np.where(m_area > 150, 1, 0))
+                df_pred["garajes"] = np.maximum(df_pred["garajes"].fillna(0), min_gar)
+        # ------------------------------------------------------
+
         for col, default in [
             ("tipo_inmueble", "otro"),
             ("estado_inmueble", "desconocido"),

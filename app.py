@@ -152,7 +152,7 @@ def load_model_bundle(manifest=None):
         bundle = pickle.load(io.BytesIO(resp["Body"].read()))
 
         if isinstance(bundle, dict) and "model" in bundle:
-            return bundle, manifest
+            return bundle
 
         return {
             "model": bundle,
@@ -163,10 +163,10 @@ def load_model_bundle(manifest=None):
             "fuente_segmento_ratio_stats": None,
             "market_meta": {},
             "feature_cols": [],
-        }, manifest
+        }
     except Exception as e:
         st.sidebar.error(f"Error cargando bundle {key}: {e}")
-        return None, {}
+        return None
 
 
 def _s3_storage_options():
@@ -1277,11 +1277,7 @@ with tab4:
             v_comuna = "comuna_otra"
             
         df_comuna = df_ciudad[df_ciudad["comuna_mercado"] == v_comuna] if v_comuna != "comuna_otra" else df_ciudad
-        if "sector_mercado" in df.columns:
-            sectores_disp = sorted([s for s in df_comuna["sector_mercado"].unique() if pd.notna(s) and s != "sector_otra"])
-            v_sector = st.selectbox("Sector / Barrio", ["sector_otra"] + sectores_disp)
-        else:
-            v_sector = "sector_otra"
+        v_sector = "sector_otra" # Simplificación UX sugerida por usuario
         
         v_tipo   = st.selectbox("Tipo", ["apartamento", "casa", "oficina", "local_comercial", "otro"])
         v_estado = st.selectbox("Estado", ["usado", "nuevo"])

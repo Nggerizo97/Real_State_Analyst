@@ -91,21 +91,27 @@ def dark_layout(fig, height=380, **extra):
 # CLIENTES Y CARGA
 # ══════════════════════════════════════════════════════════════════
 
+# Configuración LLM (Ollama local o Cloud API)
+_llm_cfg = st.secrets.get("llm", {})
 llm_client = OpenAI(
-    base_url=st.secrets.get("llm", {}).get("api_base", "http://localhost:11434/v1"),
-    api_key=st.secrets.get("llm", {}).get("api_key", "ollama"),
+    base_url=_llm_cfg.get("api_base", "http://localhost:11434/v1"),
+    api_key=_llm_cfg.get("api_key", "ollama"),
 )
-LLM_MODEL = st.secrets.get("llm", {}).get("model_name", "llama3")
-MODELO_PATH = "models/"
-MANIFEST_KEY = "models/manifest.json"
-
+LLM_MODEL = _llm_cfg.get("model_name", "llama3")
 
 def llm_ready():
-    try:
-        llm_client.models.list()
-        return True
-    except Exception:
-        return False
+    """Verifica si el LLM está respondiendo."""
+    if "llm_status" not in st.session_state:
+        try:
+            # Timeout corto para no bloquear la UI si Ollama no está
+            llm_client.with_options(timeout=1.5).models.list()
+            st.session_state.llm_status = True
+        except Exception:
+            st.session_state.llm_status = False
+    return st.session_state.llm_status
+
+MODELO_PATH = "models/"
+MANIFEST_KEY = "models/manifest.json"
 
 
 
@@ -149,7 +155,17 @@ def load_model_bundle(manifest=None):
 
     try:
         resp = s3.get_object(Bucket=bucket, Key=key)
-        bundle = pickle.load(io.BytesIO(resp["Body"].read()))
+        raw_data = resp["Body"].read()
+
+        # Intento 1: Carga nativa JSON (Recomendado para producción/nube)
+        if key.endswith(".json"):
+            import xgboost as xgb
+            bst = xgb.Booster()
+            bst.load_model(bytearray(raw_data))
+            return {"model": bst, "strategy": "absolute", "feature_cols": []}
+
+        # Intento 2: Carga Pickle (Solo si coincide la versión de sklearn)
+        bundle = pickle.load(io.BytesIO(raw_data))
 
         if isinstance(bundle, dict) and "model" in bundle:
             return bundle
@@ -165,7 +181,11 @@ def load_model_bundle(manifest=None):
             "feature_cols": [],
         }
     except Exception as e:
-        st.sidebar.error(f"Error cargando bundle {key}: {e}")
+        error_msg = str(e)
+        if "_RemainderColsList" in error_msg:
+             st.sidebar.error("❌ Error de Versión (Pickle): Exporta el modelo como .json en Databricks.")
+        else:
+             st.sidebar.error(f"Error cargando bundle {key}: {e}")
         return None
 
 

@@ -5,9 +5,8 @@ boto3
 joblib
 plotly
 openai
-playwright
 pyarrow
 s3fs
 python-dotenv
-xgboost==1.7.3
-scikit-learn==1.5.1
+scikit-learn
+xgboost

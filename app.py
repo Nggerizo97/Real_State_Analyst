@@ -332,18 +332,28 @@ def _dummy_df() -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════════
 # CARGA INICIAL
 # ══════════════════════════════════════════════════════════════════
-bundle, manifest = load_model_bundle()
 raw_df = load_gold()
 gold_analitica = load_mercado_analitica()
 gold_sectorial = load_mercado_sectorial()
 gold_portales  = load_portal_operacion()
 
+# Solo cargar modelo pesado si la data NO viene pre-costeada de Databricks
+pre_scored = "rentabilidad_potencial" in raw_df.columns and "estado_inversion" in raw_df.columns
+
 if "master_db" not in st.session_state:
-    if "rentabilidad_potencial" in raw_df.columns:
+    if pre_scored:
         st.session_state.master_db = raw_df.copy()
     else:
+        bundle, manifest = load_model_bundle()
         with st.spinner("Calculando señales (Fallback a XGBoost local)..."):
             st.session_state.master_db = score_dataframe(raw_df.copy(), bundle)
+
+# Cargar bundle y manifest (lazy, solo si se necesitan para Tab 4 o sidebar)
+if pre_scored:
+    bundle, manifest = None, raw_df.attrs.get("manifest", {})
+else:
+    if "bundle" not in dir():
+        bundle, manifest = load_model_bundle()
 
 df = st.session_state.master_db
 

@@ -11,8 +11,12 @@ app.py — Real Estate Analyst Colombia
 import io
 import json
 import os
+import sys
 import re
 import warnings
+
+# Asegurar que el directorio raíz está en el path para imports
+sys.path.append(os.getcwd())
 from datetime import datetime, timezone
 
 import boto3

@@ -147,10 +147,13 @@ def load_model_bundle(manifest=None):
         resp = s3.get_object(Bucket=bucket, Key=key)
         raw_data = resp["Body"].read()
 
-        # Intento 1: Carga nativa JSON (Recomendado para producción/nube)
-        if key.endswith(".json"):
+        # Detección automática de formato (JSON vs Pickle)
+        is_json = raw_data.startswith(b"{") or key.endswith(".json")
+
+        if is_json:
             import xgboost as xgb
             bst = xgb.Booster()
+            # Cargar desde buffer de bytes
             bst.load_model(bytearray(raw_data))
             return {"model": bst, "strategy": "absolute", "feature_cols": []}
 

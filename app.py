@@ -104,33 +104,33 @@ def get_s3():
     )
 
 
-@st.cache_resource(show_spinner=False, ttl=1800)
-def load_model_bundle():
-    """Carga el bundle campeón desde S3 vía manifest; si no existe, usa el bundle_v3 más reciente."""
-    s3 = get_s3()
-    bucket = st.secrets["aws"]["s3_bucket_name"]
-
-    manifest = {}
-    key = ""
-
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_manifest():
+    """Carga solo el manifest (JSON) de S3."""
     try:
-        manifest = json.loads(
+        s3 = get_s3()
+        bucket = st.secrets["aws"]["s3_bucket_name"]
+        return json.loads(
             s3.get_object(Bucket=bucket, Key=MANIFEST_KEY)["Body"].read()
         )
-        key = manifest.get("champion_model_key", "")
     except Exception:
-        st.sidebar.warning("Manifest no encontrado — buscando bundle_v3 más reciente en S3...")
+        return {}
+
+def load_model_bundle(manifest=None):
+    """Carga el bundle pesado (.pkl) de S3."""
+    s3 = get_s3()
+    bucket = st.secrets["aws"]["s3_bucket_name"]
+    
+    if not manifest:
+        manifest = load_manifest()
+    
+    key = manifest.get("champion_model_key", "")
+    if not key:
+        # Fallback a discovery
         objs = s3.list_objects_v2(Bucket=bucket, Prefix=MODELO_PATH).get("Contents", [])
-        bundles = sorted(
-            [o["Key"] for o in objs if "bundle_v3" in o["Key"] and o["Key"].endswith(".pkl")]
-        )
-        if not bundles:
-            return None, {}
+        bundles = sorted([o["Key"] for o in objs if "bundle_v3" in o["Key"] and o["Key"].endswith(".pkl")])
+        if not bundles: return None
         key = bundles[-1]
-        manifest = {
-            "champion_model_key": key,
-            "promoted_at": "S3 Discovery",
-        }
 
     try:
         resp = s3.get_object(Bucket=bucket, Key=key)
@@ -333,6 +333,7 @@ def _dummy_df() -> pd.DataFrame:
 # CARGA INICIAL
 # ══════════════════════════════════════════════════════════════════
 raw_df = load_gold()
+manifest = load_manifest()
 gold_analitica = load_mercado_analitica()
 gold_sectorial = load_mercado_sectorial()
 gold_portales  = load_portal_operacion()
@@ -344,16 +345,13 @@ if "master_db" not in st.session_state:
     if pre_scored:
         st.session_state.master_db = raw_df.copy()
     else:
-        bundle, manifest = load_model_bundle()
+        bundle = load_model_bundle(manifest)
         with st.spinner("Calculando señales (Fallback a XGBoost local)..."):
             st.session_state.master_db = score_dataframe(raw_df.copy(), bundle)
 
-# Cargar bundle y manifest (lazy, solo si se necesitan para Tab 4 o sidebar)
-if pre_scored:
-    bundle, manifest = None, raw_df.attrs.get("manifest", {})
-else:
-    if "bundle" not in dir():
-        bundle, manifest = load_model_bundle()
+# El bundle se carga como None inicialmente si ya hay pre-scored (ahorro RAM)
+if "bundle" not in st.session_state:
+    st.session_state.bundle = None
 
 df = st.session_state.master_db
 
@@ -1292,10 +1290,15 @@ with tab4:
                     unsafe_allow_html=True)
 
         if btn_valorar:
+            # Carga perezosa del modelo XGBoost bundle solo si se presiona el botón
+            if st.session_state.bundle is None:
+                with st.spinner("Descargando modelo XGBoost desde S3..."):
+                     st.session_state.bundle = load_model_bundle(manifest)
+            
             with st.spinner("Ejecutando modelo XGBoost..."):
                 try:
-                    if bundle is None:
-                        st.error("Modelo no disponible.")
+                    if st.session_state.bundle is None:
+                        st.error("Modelo no disponible. Verifica conexión a S3.")
                     else:
                         row = {
                             "area_m2": float(v_area),
@@ -1315,7 +1318,7 @@ with tab4:
                             "ubicacion_clean": f"{v_ciudad} {v_comuna} {v_sector}",
                         }
 
-                        result = score_single(row, bundle)
+                        result = score_single(row, st.session_state.bundle)
 
                         if "error" in result:
                             st.error(f"Error en valoración: {result['error']}")

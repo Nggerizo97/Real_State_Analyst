@@ -12,6 +12,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import re
 import warnings
 
@@ -147,15 +148,28 @@ def load_model_bundle(manifest=None):
         resp = s3.get_object(Bucket=bucket, Key=key)
         raw_data = resp["Body"].read()
 
-        # Detección automática de formato (JSON vs Pickle)
-        is_json = raw_data.startswith(b"{") or key.endswith(".json")
-
-        if is_json:
+        # Detección automática de formato (JSON Bundle vs Pickle)
+        if raw_data.startswith(b"{"):
             import xgboost as xgb
-            bst = xgb.Booster()
-            # Cargar desde buffer de bytes
-            bst.load_model(bytearray(raw_data))
-            return {"model": bst, "strategy": "absolute", "feature_cols": []}
+            bundle = json.loads(raw_data)
+            
+            # Si el bundle tiene el modelo como string/dict JSON, lo cargamos en XGBRegressor
+            if "model" in bundle and isinstance(bundle["model"], (str, dict)):
+                model_json = bundle["model"]
+                if isinstance(model_json, dict):
+                    model_json = json.dumps(model_json)
+                
+                reg = xgb.XGBRegressor()
+                # Crear un archivo temporal para cargar (XGBRegressor.load_model prefiere archivos)
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tf:
+                    tf.write(model_json)
+                    temp_path = tf.name
+                
+                reg.load_model(temp_path)
+                os.remove(temp_path)
+                bundle["model"] = reg
+                return bundle
 
         # Intento 2: Carga Pickle (Solo si coincide la versión de sklearn)
         bundle = pickle.load(io.BytesIO(raw_data))

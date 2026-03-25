@@ -18,16 +18,6 @@ import warnings
 # Asegurar que el directorio raíz está en el path para imports
 sys.path.append(os.getcwd())
 
-# DEBUG LOGS PARA DEPLOY
-print(f"DEBUG: CWD = {os.getcwd()}")
-print(f"DEBUG: sys.path = {sys.path}")
-try:
-    print(f"DEBUG: Files in CWD = {os.listdir('.')}")
-    if os.path.exists('src'):
-        print(f"DEBUG: Files in src/ = {os.listdir('src')}")
-except Exception as e:
-    print(f"DEBUG: Error listing files: {e}")
-
 from datetime import datetime, timezone
 
 import boto3

@@ -119,6 +119,7 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
                         preprocessor_blob = preprocessor_blob.encode('latin1')
                 preprocessor = pickle.loads(preprocessor_blob)
             except Exception as e:
+                unpickle_error = str(e)
                 print(f"Error unpickling preprocessor: {e}")
                 pass
         
@@ -147,7 +148,8 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
             
             if not preprocessor:
                 avail_keys = list(bundle.keys())
-                raise ValueError(f"Preprocesador no disponible. Llaves en bundle: {avail_keys}")
+                err_ext = f" Error unpickling: {unpickle_error}" if 'unpickle_error' in locals() else ""
+                raise ValueError(f"Preprocesador no disponible.{err_ext} Llaves en bundle: {avail_keys}")
             
             X_proc = preprocessor.transform(X)
             precio_pred = bst.predict(xgb.DMatrix(X_proc))

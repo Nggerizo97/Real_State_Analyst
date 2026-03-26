@@ -79,27 +79,119 @@ def dark_layout(fig, height=380, **extra):
     return fig
 
 # ══════════════════════════════════════════════════════════════════
-# CLIENTES Y CARGA
+# CLIENTES Y CARGA (S3, Bedrock, Ollama)
 # ══════════════════════════════════════════════════════════════════
 
-# Configuración LLM (Ollama local o Cloud API)
+# 1. Configuración S3 / AWS
+@st.cache_resource(show_spinner=False)
+def get_s3():
+    return boto3.client(
+        "s3",
+        aws_access_key_id=st.secrets["aws"]["aws_access_key_id"],
+        aws_secret_access_key=st.secrets["aws"]["aws_secret_access_key"],
+        region_name=st.secrets["aws"].get("aws_region", "us-east-1"),
+    )
+
+# 2. Configuración Bedrock (Llama 3.1)
+@st.cache_resource(show_spinner=False)
+def get_bedrock():
+    try:
+        return boto3.client(
+            "bedrock-runtime",
+            aws_access_key_id=st.secrets["aws"]["aws_access_key_id"],
+            aws_secret_access_key=st.secrets["aws"]["aws_secret_access_key"],
+            region_name=st.secrets["aws"].get("aws_region", "us-east-1"),
+        )
+    except Exception:
+        return None
+
+# 3. Configuración Ollama (Fallback local)
 _llm_cfg = st.secrets.get("llm", {})
 llm_client = OpenAI(
     base_url=_llm_cfg.get("api_base", "http://localhost:11434/v1"),
     api_key=_llm_cfg.get("api_key", "ollama"),
 )
-LLM_MODEL = _llm_cfg.get("model_name", "llama3")
+LLM_MODEL = _llm_cfg.get("model_name", "llama3.1") # Ollama model
+BEDROCK_MODEL_ID = _llm_cfg.get("bedrock_model_id", "us.meta.llama3-1-8b-instruct-v1:0")
+
+def call_llm(messages, max_tokens=1000, stream=False):
+    """
+    Mediador que decide si usar Bedrock (Cloud) o Ollama (Local).
+    Soporta texto e imágenes (multimodal).
+    """
+    bedrock = get_bedrock()
+    if bedrock:
+        try:
+            bedrock_messages = []
+            system_prompts = []
+            
+            for m in messages:
+                content_list = []
+                # Manejar entrada multimodal (lista de dicts con type text/image)
+                if isinstance(m["content"], list):
+                    for part in m["content"]:
+                        if part["type"] == "text":
+                            content_list.append({"text": part["text"]})
+                        elif part["type"] == "image_url":
+                            # Bedrock espera bytes base64 directos, no URLs en el Converse API
+                            pass
+                else:
+                    content_list = [{"text": m["content"]}]
+                
+                if m["role"] == "system":
+                    system_prompts.append({"text": m["content"]})
+                else:
+                    bedrock_messages.append({
+                        "role": "user" if m["role"] == "user" else "assistant",
+                        "content": content_list
+                    })
+            
+            # Validar que la conversación NO esté vacía y empiece por el usuario
+            if not bedrock_messages:
+                return "Error: No hay mensajes para el LLM."
+            
+            # Si el primer mensaje no es usuario, Bedrock falla. Insertamos un dummy o saltamos.
+            if bedrock_messages[0]["role"] != "user":
+                bedrock_messages.insert(0, {"role": "user", "content": [{"text": "Hola"}]})
+            
+            # Construir argumentos para la llamada de forma dinámica
+            converse_kwargs = {
+                "modelId": BEDROCK_MODEL_ID,
+                "messages": bedrock_messages,
+                "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0.1}
+            }
+            if system_prompts:
+                converse_kwargs["system"] = system_prompts
+                
+            response = bedrock.converse(**converse_kwargs)
+            return response["output"]["message"]["content"][0]["text"]
+        except Exception as e:
+            st.sidebar.warning(f"Bedrock falló: {e}. Intentando Ollama...")
+
+    # Fallback a Ollama / OpenAI Compatible
+    try:
+        # El cliente de OpenAI ya maneja 'system' dentro de messages
+        resp = llm_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=0.1,
+            stream=stream
+        )
+        if stream:
+            return resp
+        return resp.choices[0].message.content.strip()
+    except Exception:
+        return "Error: Ningún servicio de LLM disponible."
 
 def llm_ready():
-    """Verifica si el LLM está respondiendo."""
-    if "llm_status" not in st.session_state:
-        try:
-            # Timeout corto para no bloquear la UI si Ollama no está
-            llm_client.with_options(timeout=1.5).models.list()
-            st.session_state.llm_status = True
-        except Exception:
-            st.session_state.llm_status = False
-    return st.session_state.llm_status
+    """Verifica si alguno de los LLM está respondiendo."""
+    if get_bedrock(): return True
+    try:
+        llm_client.with_options(timeout=1.0).models.list()
+        return True
+    except Exception:
+        return False
 
 MODELO_PATH = "models/"
 MANIFEST_KEY = "models/manifest.json"
@@ -599,15 +691,17 @@ REGLAS CRÍTICAS:
             history = [{"role": "system", "content": full_system}]
             history += [{"role": m["role"], "content": m["content"]}
                         for m in st.session_state[msgs_key][-8:]]
-            resp = llm_client.chat.completions.create(
-                model=LLM_MODEL, messages=history, stream=True
-            )
-            for chunk in resp:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    full += delta
-                    placeholder_el.markdown(full + "▌")
-            placeholder_el.markdown(full)
+            resp = call_llm(history, stream=True)
+            if isinstance(resp, str): # Error o respuesta no-stream
+                full = resp
+                placeholder_el.markdown(full)
+            else:
+                for chunk in resp:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        full += delta
+                        placeholder_el.markdown(full + "▌")
+                placeholder_el.markdown(full)
         except Exception as e:
             full = f"Error de conexión con Ollama: {e}"
             placeholder_el.markdown(full)
@@ -1399,11 +1493,8 @@ with tab4:
                                         f"No devuelvas NADA más que el JSON válido."
                                     )
                                     try:
-                                        resp = llm_client.chat.completions.create(
-                                            model=LLM_MODEL,
-                                            messages=[{"role": "user", "content": prompt_val}],
-                                        )
-                                        resp_text = resp.choices[0].message.content.strip()
+                                        resp_text = call_llm([{"role": "user", "content": prompt_val}])
+                                        
                                         if resp_text.startswith("```"):
                                             resp_text = resp_text.split("\n", 1)[1].rsplit("\n", 1)[0]
                                         if resp_text.startswith("json"):
@@ -1486,11 +1577,7 @@ with tab4:
                     })
 
                     try:
-                        resp = llm_client.chat.completions.create(
-                            model=LLM_MODEL,
-                            messages=[{"role": "user", "content": img_contents}],
-                        )
-                        analysis = resp.choices[0].message.content
+                        analysis = call_llm([{"role": "user", "content": img_contents}])
                         st.markdown('<div class="section-label" style="margin-top:1rem">Análisis de acabados (IA)</div>',
                                     unsafe_allow_html=True)
                         st.markdown(

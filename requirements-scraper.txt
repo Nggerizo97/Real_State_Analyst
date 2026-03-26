@@ -1,5 +1,5 @@
-# Dependencias exclusivas para el Scraper (GitHub Actions)
 playwright==1.58.0
 pandas
 boto3
 python-dotenv
+pyarrow

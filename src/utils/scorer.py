@@ -136,7 +136,18 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
                 except:
                     model_json = model_json.encode('utf-8')
             bst.load_model(bytearray(model_json))
-            if not preprocessor: raise ValueError("Preprocesador no disponible.")
+            
+            # Intento de recuperación final del preprocesador
+            if not preprocessor:
+                # Buscar en otras llaves posibles
+                for k in ["preprocessor", "transformer", "proc"]:
+                    if k in bundle:
+                        preprocessor = bundle[k]
+                        break
+            
+            if not preprocessor:
+                avail_keys = list(bundle.keys())
+                raise ValueError(f"Preprocesador no disponible. Llaves en bundle: {avail_keys}")
             
             X_proc = preprocessor.transform(X)
             precio_pred = bst.predict(xgb.DMatrix(X_proc))

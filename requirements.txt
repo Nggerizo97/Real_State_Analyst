@@ -8,5 +8,5 @@ openai
 pyarrow
 s3fs
 python-dotenv
-scikit-learn
+scikit-learn==1.4.2
 xgboost

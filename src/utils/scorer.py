@@ -110,9 +110,17 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
         preprocessor_blob = bundle.get("preprocessor_pickle")
         if preprocessor_blob:
             try:
-                if isinstance(preprocessor_blob, str): preprocessor_blob = preprocessor_blob.encode('latin1')
+                import base64
+                # Manejar formato Base64 (común en bundles JSON) o raw bytes
+                if isinstance(preprocessor_blob, str):
+                    try:
+                        preprocessor_blob = base64.b64decode(preprocessor_blob)
+                    except:
+                        preprocessor_blob = preprocessor_blob.encode('latin1')
                 preprocessor = pickle.loads(preprocessor_blob)
-            except: pass
+            except Exception as e:
+                print(f"Error unpickling preprocessor: {e}")
+                pass
         
         if preprocessor is None:
             old_pipe = bundle.get("model")
@@ -121,7 +129,12 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
         model_json = bundle.get("model_json")
         if model_json:
             bst = xgb.Booster()
-            if isinstance(model_json, str): model_json = model_json.encode('utf-8')
+            if isinstance(model_json, str):
+                try:
+                    import base64
+                    model_json = base64.b64decode(model_json)
+                except:
+                    model_json = model_json.encode('utf-8')
             bst.load_model(bytearray(model_json))
             if not preprocessor: raise ValueError("Preprocesador no disponible.")
             

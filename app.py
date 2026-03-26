@@ -232,7 +232,7 @@ def load_model_bundle(manifest=None):
     if not key:
         # Fallback a discovery
         objs = s3.list_objects_v2(Bucket=bucket, Prefix=MODELO_PATH).get("Contents", [])
-        bundles = sorted([o["Key"] for o in objs if "bundle_v3" in o["Key"] and o["Key"].endswith(".pkl")])
+        bundles = sorted([o["Key"] for o in objs if "bundle_v" in o["Key"] and o["Key"].endswith(".pkl")])
         if not bundles: return None
         key = bundles[-1]
 

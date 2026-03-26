@@ -1,212 +1,174 @@
 import pandas as pd
 import numpy as np
-import streamlit as st
+import pickle
+import io
+import traceback
+import xgboost as xgb
 
 def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
-    """Aplica el bundle_v3 al dataframe completo."""
+    """Aplica el bundle al dataframe completo usando Safe-Load Hybrid y Market Features v8."""
     if bundle is None:
         df["precio_predicho"] = df["precio_num"]
         df["rentabilidad_potencial"] = 0.0
         df["estado_inversion"] = "Sin modelo"
         return df
 
-    pipeline = bundle.get("model")
     strategy = bundle.get("strategy", "absolute")
     city_stats = bundle.get("city_stats")
+    comuna_stats = bundle.get("comuna_stats")
     segment_stats = bundle.get("segment_stats")
+    micro_stats = bundle.get("micro_stats")
+    sector_stats = bundle.get("sector_stats")
     fuente_ratio_stats = bundle.get("fuente_ratio_stats")
     fuente_segmento_ratio_stats = bundle.get("fuente_segmento_ratio_stats")
+    hab_stats = bundle.get("hab_stats")
     market_meta = bundle.get("market_meta", {})
 
     try:
         df_pred = df.copy()
 
+        # 1. Limpieza base e imputación geométrica
         for col in ["area_m2", "habitaciones", "banos", "garajes", "num_portales",
                     "dispersion_pct_grupo", "precio_desviacion_grupo_pct", "data_completeness"]:
-            if col not in df_pred.columns:
-                df_pred[col] = np.nan
+            if col not in df_pred.columns: df_pred[col] = np.nan
             df_pred[col] = pd.to_numeric(df_pred[col], errors="coerce")
 
-        # --- CAPPING INTELIGENTE (Guardrails de Inferencia) ---
-        if "area_m2" in df_pred.columns:
-            m_area = df_pred["area_m2"]
-            if "banos" in df_pred.columns:
-                # Si area > 120m2, se esperan al menos 2 baños. Si area > 180m2, al menos 3
-                min_banos = np.where(m_area > 180, 3, np.where(m_area > 120, 2, 1))
-                df_pred["banos"] = np.maximum(df_pred["banos"].fillna(1), min_banos)
-            if "garajes" in df_pred.columns:
-                # Si area > 150m2, se espera al menos 1 garaje. Si area > 200m2, al menos 2
-                min_gar = np.where(m_area > 200, 2, np.where(m_area > 150, 1, 0))
-                df_pred["garajes"] = np.maximum(df_pred["garajes"].fillna(0), min_gar)
-        # ------------------------------------------------------
-
-        for col, default in [
-            ("tipo_inmueble", "otro"),
-            ("estado_inmueble", "desconocido"),
-            ("fuente", "desconocido"),
-            ("city_token", "otra_ciudad"),
-        ]:
-            if col not in df_pred.columns:
-                df_pred[col] = default
+        for col, default in [("tipo_inmueble", "otro"), ("estado_inmueble", "desconocido"), 
+                            ("fuente", "desconocido"), ("city_token", "otra_ciudad"),
+                            ("comuna_mercado", "comuna_otra"), ("sector_mercado", "sector_otra")]:
+            if col not in df_pred.columns: df_pred[col] = default
             df_pred[col] = df_pred[col].fillna(default).astype(str)
 
-        text_cols = [c for c in ["ubicacion_norm", "ubicacion_clean", "titulo"] if c in df_pred.columns]
-        if text_cols:
-            df_pred["texto_completo"] = df_pred[text_cols].fillna("").agg(" ".join, axis=1)
-        else:
-            df_pred["texto_completo"] = ""
-
-        df_pred["market_segment"] = (
-            df_pred["city_token"].astype(str) + "__" + df_pred["tipo_inmueble"].astype(str)
-        )
-        df_pred["habitaciones_bucket"] = (
-            df_pred["habitaciones"].fillna(-1).clip(-1, 6)
-        )
         df_pred["log_area_m2"] = np.log1p(df_pred["area_m2"].clip(lower=0))
-        df_pred["banos_por_habitacion"] = (
-            df_pred["banos"] / df_pred["habitaciones"].replace(0, np.nan)
-        ).replace([np.inf, -np.inf], np.nan)
+        df_pred["hab_bucket"] = df_pred["habitaciones"].fillna(-1).clip(-1, 6)
+        df_pred["market_segment"] = df_pred["city_token"] + "__" + df_pred["tipo_inmueble"]
+        df_pred["micro_market_segment"] = df_pred["market_segment"] + "__" + df_pred["comuna_mercado"]
+        df_pred["sector_market_segment"] = df_pred["market_segment"] + "__" + df_pred["sector_mercado"]
 
-        if city_stats is not None and not city_stats.empty and "city_token" in city_stats.columns:
-            df_pred = df_pred.merge(city_stats, on="city_token", how="left")
+        # 2. Merges de Estadísticas (Market Features)
+        if city_stats is not None: df_pred = df_pred.merge(city_stats, on="city_token", how="left")
+        if comuna_stats is not None: df_pred = df_pred.merge(comuna_stats, on=["city_token", "comuna_mercado"], how="left")
+        if segment_stats is not None: df_pred = df_pred.merge(segment_stats, on="market_segment", how="left")
+        if micro_stats is not None: df_pred = df_pred.merge(micro_stats, on="micro_market_segment", how="left")
+        if sector_stats is not None: df_pred = df_pred.merge(sector_stats, on="sector_market_segment", how="left")
+        if hab_stats is not None: df_pred = df_pred.merge(hab_stats, on=["city_token","hab_bucket"], how="left")
+        if fuente_ratio_stats is not None: df_pred = df_pred.merge(fuente_ratio_stats, on="fuente", how="left")
+        if fuente_segmento_ratio_stats is not None: df_pred = df_pred.merge(fuente_segmento_ratio_stats, on=["fuente","market_segment"], how="left")
 
-        if segment_stats is not None and not segment_stats.empty and "market_segment" in segment_stats.columns:
-            df_pred = df_pred.merge(segment_stats, on="market_segment", how="left")
+        # 3. Cálculo de Features Estimadas (Lógica Paridad v8)
+        gpm = market_meta.get("global_price_median", 0.0)
+        gpm2 = market_meta.get("global_pm2_median", 0.0)
+        gff = market_meta.get("global_fuente_factor", 1.0)
 
-        # hab_stats fallback
-        hab_stats = bundle.get("hab_stats")
-        if hab_stats is not None and not hab_stats.empty:
-            df_pred = df_pred.merge(hab_stats, on=["city_token", "habitaciones_bucket"], how="left")
+        # Fallbacks
+        r = df_pred
+        r["precio_mediano_ciudad"] = r.get("precio_mediano_ciudad", pd.Series(gpm, index=r.index)).fillna(gpm)
+        r["precio_m2_mediano_ciudad"] = r.get("precio_m2_mediano_ciudad", pd.Series(gpm2, index=r.index)).fillna(gpm2)
+        r["precio_m2_mediano_comuna"] = r.get("precio_m2_mediano_comuna", r["precio_m2_mediano_ciudad"]).fillna(r["precio_m2_mediano_ciudad"])
+        r["precio_m2_mediano_segmento"] = r.get("precio_m2_mediano_segmento", r["precio_m2_mediano_comuna"]).fillna(r["precio_m2_mediano_comuna"])
+        r["precio_m2_mediano_microsegmento"] = r.get("precio_m2_mediano_microsegmento", r["precio_m2_mediano_segmento"]).fillna(r["precio_m2_mediano_segmento"])
+        r["precio_m2_mediano_sector"] = r.get("precio_m2_mediano_sector", r["precio_m2_mediano_comuna"]).fillna(r["precio_m2_mediano_comuna"])
+        r["precio_m2_p25_sector"] = r.get("precio_m2_p25_sector", r["precio_m2_mediano_sector"]).fillna(r["precio_m2_mediano_sector"])
+        r["precio_m2_p75_sector"] = r.get("precio_m2_p75_sector", r["precio_m2_mediano_sector"]).fillna(r["precio_m2_mediano_sector"])
+        
+        r["fuente_factor"] = r.get("fuente_factor", pd.Series(gff, index=r.index)).fillna(gff)
+        r["fuente_segmento_factor"] = r.get("fuente_segmento_factor", r["fuente_factor"]).fillna(r["fuente_factor"])
 
-        if fuente_ratio_stats is not None and not fuente_ratio_stats.empty and "fuente" in fuente_ratio_stats.columns:
-            df_pred = df_pred.merge(fuente_ratio_stats, on="fuente", how="left")
-
-        if (
-            fuente_segmento_ratio_stats is not None
-            and not fuente_segmento_ratio_stats.empty
-            and all(c in fuente_segmento_ratio_stats.columns for c in ["fuente", "market_segment"])
-        ):
-            df_pred = df_pred.merge(
-                fuente_segmento_ratio_stats,
-                on=["fuente", "market_segment"],
-                how="left",
-            )
-
-        global_price_median = market_meta.get("global_price_median", float(df["precio_num"].median()))
-        global_pm2_median = market_meta.get(
-            "global_pm2_median",
-            float((df["precio_num"] / df["area_m2"].replace(0, np.nan)).median())
-        )
-        global_area_median = market_meta.get("global_area_median", float(df["area_m2"].median()))
-        global_fuente_factor = market_meta.get("global_fuente_factor", 1.0)
-
-        for col in ["precio_mediano_ciudad", "precio_m2_mediano_ciudad", "area_mediana_ciudad",
-                    "precio_m2_mediano_segmento", "precio_mediano_segmento", "precio_m2_mediano_habs",
-                    "fuente_factor", "fuente_segmento_factor"]:
-            if col not in df_pred.columns:
-                df_pred[col] = np.nan
-
-        df_pred["precio_mediano_ciudad"] = df_pred["precio_mediano_ciudad"].fillna(global_price_median)
-        df_pred["precio_m2_mediano_ciudad"] = df_pred["precio_m2_mediano_ciudad"].fillna(global_pm2_median)
-        df_pred["area_mediana_ciudad"] = df_pred["area_mediana_ciudad"].fillna(global_area_median)
-        df_pred["precio_m2_mediano_segmento"] = df_pred["precio_m2_mediano_segmento"].fillna(
-            df_pred["precio_m2_mediano_ciudad"]
-        )
-        df_pred["precio_mediano_segmento"] = df_pred["precio_mediano_segmento"].fillna(
-            df_pred["precio_mediano_ciudad"]
-        )
-        df_pred["precio_m2_mediano_habs"] = df_pred["precio_m2_mediano_habs"].fillna(
-            df_pred["precio_m2_mediano_segmento"]
-        )
-        df_pred["fuente_factor"] = df_pred["fuente_factor"].fillna(global_fuente_factor)
-        df_pred["fuente_segmento_factor"] = df_pred["fuente_segmento_factor"].fillna(
-            df_pred["fuente_factor"]
+        # Estimaciones Finales
+        r["precio_estimado_ciudad_area"] = r["area_m2"] * r["precio_m2_mediano_ciudad"]
+        r["precio_estimado_comuna_area"] = r["area_m2"] * r["precio_m2_mediano_comuna"]
+        r["precio_estimado_segmento_area"] = r["area_m2"] * r["precio_m2_mediano_segmento"]
+        r["precio_estimado_microsegmento_area"] = r["area_m2"] * r["precio_m2_mediano_microsegmento"]
+        r["precio_estimado_sector_area"] = r["area_m2"] * r["precio_m2_mediano_sector"]
+        r["precio_sector_rango_bajo_area"] = r["area_m2"] * r["precio_m2_p25_sector"]
+        r["precio_sector_rango_alto_area"] = r["area_m2"] * r["precio_m2_p75_sector"]
+        
+        # El baseline principal del modelo v8
+        r["precio_estimado_segmento_area_ajustado"] = (
+            (r["precio_estimado_microsegmento_area"] * r["fuente_segmento_factor"])
+            .fillna(r["precio_estimado_microsegmento_area"])
+            .fillna(r["precio_estimado_sector_area"])
+            .fillna(r["precio_estimado_comuna_area"])
+            .fillna(r["precio_estimado_ciudad_area"])
         )
 
-        df_pred["precio_estimado_ciudad_area"] = df_pred["area_m2"] * df_pred["precio_m2_mediano_ciudad"]
-        df_pred["precio_estimado_segmento_area"] = df_pred["area_m2"] * df_pred["precio_m2_mediano_segmento"]
-        df_pred["precio_estimado_segmento_area_ajustado"] = (
-            df_pred["precio_estimado_segmento_area"] * df_pred["fuente_segmento_factor"]
-        ).fillna(df_pred["precio_estimado_segmento_area"]).fillna(df_pred["precio_estimado_ciudad_area"])
-
-        df_pred["area_vs_ciudad_ratio"] = (
-            df_pred["area_m2"] / df_pred["area_mediana_ciudad"].replace(0, np.nan)
-        ).replace([np.inf, -np.inf], np.nan).fillna(1.0)
-
-        df_pred["ajuste_fuente_pct"] = (df_pred["fuente_segmento_factor"] - 1.0) * 100.0
-
+        # 4. Preparación de Features para el Booster
         feature_cols = bundle.get("feature_cols", [])
-        if not feature_cols:
-            feature_cols = [
-                "area_m2", "log_area_m2", "habitaciones", "banos", "garajes",
-                "banos_por_habitacion", "num_portales", "dispersion_pct_grupo",
-                "precio_desviacion_grupo_pct", "data_completeness",
-                "precio_mediano_ciudad", "precio_m2_mediano_ciudad",
-                "precio_m2_mediano_segmento", "precio_m2_mediano_habs",
-                "precio_estimado_ciudad_area", "precio_estimado_segmento_area",
-                "precio_estimado_segmento_area_ajustado",
-                "fuente_factor", "fuente_segmento_factor", "ajuste_fuente_pct",
-                "area_vs_ciudad_ratio", "tipo_inmueble", "estado_inmueble",
-                "fuente", "city_token", "texto_completo",
-            ]
+        if not feature_cols: raise ValueError("Bundle no contiene feature_cols.")
 
         for col in feature_cols:
-            if col not in df_pred.columns:
+            if col not in r.columns:
                 if col in ["tipo_inmueble", "estado_inmueble", "fuente", "city_token", "texto_completo"]:
-                    df_pred[col] = "desconocido" if col != "texto_completo" else ""
+                    r[col] = "desconocido" if col != "texto_completo" else ""
                 else:
-                    df_pred[col] = 0.0
+                    r[col] = 0.0
 
-        X = df_pred[feature_cols].copy()
+        X = r[feature_cols].copy()
 
-        if strategy == "residual":
-            pred_ratio = pipeline.predict(X)
-            ratio_low = bundle.get("ratio_clip_low", 0.25)
-            ratio_high = bundle.get("ratio_clip_high", 4.0)
-            pred_ratio = np.clip(pred_ratio, ratio_low, ratio_high)
-            baseline = df_pred["precio_estimado_segmento_area_ajustado"].fillna(global_price_median)
-            precio_pred = pred_ratio * baseline.to_numpy()
+        # 5. Predicción Safe-Load
+        preprocessor = None
+        preprocessor_blob = bundle.get("preprocessor_pickle")
+        if preprocessor_blob:
+            try:
+                if isinstance(preprocessor_blob, str): preprocessor_blob = preprocessor_blob.encode('latin1')
+                preprocessor = pickle.loads(preprocessor_blob)
+            except: pass
+        
+        if preprocessor is None:
+            old_pipe = bundle.get("model")
+            if hasattr(old_pipe, 'named_steps'): preprocessor = old_pipe.named_steps.get('preprocessor')
+
+        model_json = bundle.get("model_json")
+        if model_json:
+            bst = xgb.Booster()
+            if isinstance(model_json, str): model_json = model_json.encode('utf-8')
+            bst.load_model(bytearray(model_json))
+            if not preprocessor: raise ValueError("Preprocesador no disponible.")
+            
+            X_proc = preprocessor.transform(X)
+            precio_pred = bst.predict(xgb.DMatrix(X_proc))
+            precio_pred = np.expm1(precio_pred) # Inverse Log
+            
+            if strategy == "residual":
+                precio_pred = precio_pred * r["precio_estimado_segmento_area_ajustado"].fillna(gpm).to_numpy()
         else:
+            pipeline = bundle.get("model")
+            if not pipeline: raise ValueError("No hay modelo disponible.")
             precio_pred = pipeline.predict(X)
+            if strategy == "residual" or "Residual" in str(type(pipeline)): # v8 unified fallback
+                precio_pred = precio_pred * r["precio_estimado_segmento_area_ajustado"].fillna(gpm).to_numpy()
 
         df["precio_predicho"] = precio_pred
         df["rentabilidad_potencial"] = (
-            (df["precio_predicho"] - df["precio_num"]) / df["precio_num"] * 100
+            (df["precio_predicho"] - df["precio_num"]) / df["precio_num"].replace(0, np.nan) * 100
         ).replace([np.inf, -np.inf], 0).fillna(0).round(1)
 
-        mape_modelo = bundle.get("metrics", {}).get("mape", 23.0)
-        signal_threshold = max(12.0, min(20.0, float(mape_modelo) * 0.65))
-
+        mape_modelo = bundle.get("metrics", {}).get("mape", 20.0)
+        signal_threshold = max(12.0, min(25.0, float(mape_modelo) * 0.75))
         df["estado_inversion"] = df["rentabilidad_potencial"].apply(
-            lambda x: "Oportunidad" if x > signal_threshold
-            else ("Sobrevalorado" if x < -signal_threshold else "En mercado")
+            lambda x: "Oportunidad" if x > signal_threshold else ("Sobrevalorado" if x < -signal_threshold else "En mercado")
         )
 
     except Exception as e:
-        df["precio_predicho"] = df["precio_num"]
-        df["rentabilidad_potencial"] = 0.0
-        df["estado_inversion"] = "Sin señal"
+        traceback.print_exc()
+        df["precio_predicho"] = np.nan
+        df["estado_inversion"] = f"Error Crítico: {str(e)[:50]}"
 
     return df
 
 def score_single(row: dict, bundle: dict) -> dict:
-    """Valora un único inmueble manualmente ingresado."""
-    if bundle is None:
-        return {"error": "Bundle no disponible"}
-    
+    """Valora un único inmueble manually."""
+    if bundle is None: return {"error": "Bundle no disponible"}
     df_temp = pd.DataFrame([row])
-    # Asegurar columnas mínimas para evitar fallos en score_dataframe
-    for col in ["precio_num", "num_portales", "dispersion_pct_grupo", 
-                "precio_desviacion_grupo_pct", "data_completeness"]:
-        if col not in df_temp.columns:
-            df_temp[col] = 0.0
+    for col in ["precio_num", "num_portales", "dispersion_pct_grupo", "precio_desviacion_grupo_pct", "data_completeness"]:
+        if col not in df_temp.columns: df_temp[col] = 0.0
             
     scored = score_dataframe(df_temp, bundle)
     r = scored.iloc[0]
-    
-    mape_pct = bundle.get("metrics", {}).get("mape", 23.0)
+    if pd.isna(r["precio_predicho"]): return {"error": r["estado_inversion"]}
+
+    mape_pct = bundle.get("metrics", {}).get("mape", 20.0)
     valor = float(r["precio_predicho"])
-    
     return {
         "valor_predicho": valor,
         "precio_m2_pred": valor / max(1, row.get("area_m2", 1)),

@@ -662,6 +662,21 @@ consulta con un profesional antes de tomar decisiones de compra o inversión.
 
 def render_chat(tab_key: str, system_prompt: str, placeholder: str, ctx_df: pd.DataFrame = None):
     """Renderiza el chat contextual con límite de mensajes."""
+    # --- MODO DEMO: BLOQUEO PREMIUM ---
+    st.markdown(
+        '<div style="background:var(--surface2);border:1px solid var(--border);'
+        'padding:2rem;text-align:center;border-radius:4px;margin-top:1rem">'
+        '<div style="font-size:2rem;margin-bottom:1rem">🔒</div>'
+        '<div style="font-weight:bold;color:var(--ink);margin-bottom:.5rem">'
+        'Asistente IA - Acceso Premium</div>'
+        '<div style="font-size:.85rem;color:var(--muted);max-width:300px;margin:0 auto">'
+        'La interacción directa con el asesor inteligente está reservada para usuarios suscritos. '
+        'Contacta a ventas para activar tu licencia.</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+    return
+
     msgs_key  = f"messages_{tab_key}"
     usage_key = f"usage_{tab_key}"
 
@@ -1063,25 +1078,89 @@ with tab2:
                 f"(${p_min/1e6:.0f}M – ${p_max/1e6:.0f}M, dispersión {disp:.1f}%)."
             )
 
-        # ── Salud de portales ────────────────────────────────────
+        # ── Market Gallery: Inteligencia Multi-Portal ────────────────────────
         if gold_portales is not None and not gold_portales.empty:
             st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
-            st.markdown('<div class="section-label">Estado de portales</div>', unsafe_allow_html=True)
-            pcols = st.columns(min(len(gold_portales), 4))
-            for i, (_, row) in enumerate(gold_portales.iterrows()):
-                with pcols[i % len(pcols)]:
-                    pname = str(row.get("portal", "—")).replace("_", " ").title()
-                    ofertas = int(row.get("portal_ofertas_activas", 0))
-                    status = str(row.get("checkpoint_status", "ok"))
-                    icon = "🟢" if status == "ok" else "🔴"
-                    st.markdown(
-                        f'<div style="background:var(--surface2);border:1px solid var(--border);'
-                        f'padding:.5rem .7rem;border-radius:2px;margin-bottom:.3rem">'
-                        f'<div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">'
-                        f'{icon} {pname}</div>'
-                        f'<div style="font-size:.95rem;color:var(--ink);font-weight:600">'
-                        f'{ofertas:,} ofertas</div></div>', unsafe_allow_html=True,
+            st.markdown('<div class="section-label">Galería de Oportunidades por Portal</div>', unsafe_allow_html=True)
+            
+            # Guía de Análisis (Leyenda Didáctica)
+            st.info(
+                "💡 **¿Cómo leer estas oportunidades?**\n"
+                "- **[+15%] Oportunidad**: Significa que el inmueble tiene un **beneficio de compra del 15%** (está ese porcentaje por debajo del precio estimado del mercado).\n"
+                "- **[-10%] Sobrevalorado**: El precio de lista es un 10% superior a lo que nuestra IA recomienda para esa zona y tipo de inmueble.\n"
+                "*Analizamos miles de datos por portal para encontrar estos destaques.*"
+            )
+
+            st.warning(
+                "⚠️ **Nota importante:** Este sistema está diseñado para **análisis e inteligencia inmobiliaria**, no para la venta directa de inmuebles. "
+                "Para ver un inmueble en su fuente original, haga clic en el enlace de **Oportunidad**. "
+                "Si el enlace no funciona o no lo redirige, es posible que el inmueble haya sido vendido o retirado del portal recientemente."
+            )
+
+            st.markdown(
+                '<p style="color:var(--muted);font-size:.85rem;margin-top:1rem;margin-bottom:1.5rem">'
+                "Escaneamos los portales líderes de Colombia en tiempo real. Abajo verás los inmuebles con el "
+                "mejor balance entre precio y valor de mercado para cada plataforma.</p>",
+                unsafe_allow_html=True
+            )
+
+            # Deduplicar
+            gp_clean = gold_portales.sort_values("portal_ofertas_activas", ascending=False).drop_duplicates("portal")
+            
+            main_gps = gp_clean.head(4)
+            secondary_gps = gp_clean.iloc[4:]
+
+            def render_portal_card(row, col_context):
+                p_id = str(row.get("portal", ""))
+                pname = p_id.replace("_", " ").title()
+                ofertas = int(row.get("portal_ofertas_activas", 0))
+                status = str(row.get("checkpoint_status", "ok"))
+                icon = "🟢" if status == "ok" else "🔴"
+
+                # Buscar mejores oportunidades
+                mask_port = (df["fuente"] == p_id) & \
+                            (df["rentabilidad_potencial"] < 200) & \
+                            (df["rentabilidad_potencial"] > -50)
+                
+                top_port = df[mask_port].sort_values("rentabilidad_potencial", ascending=False).head(3)
+                links_html = ""
+                for _, prop in top_port.iterrows():
+                    url = prop.get("url", "#")
+                    signal = prop.get("rentabilidad_potencial", 0)
+                    # Usar TITULO en lugar de ubicacion para que sea didáctico
+                    raw_title = prop.get("titulo", prop.get("ubicacion_clean","Propiedad"))
+                    title = str(raw_title)[:22] + "..." if len(str(raw_title)) > 22 else str(raw_title)
+                    
+                    label = "Oportunidad" if signal > 0 else "Mercado"
+                    links_html += (
+                        f'<div style="font-size:.68rem;margin-top:.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+                        f'<a href="{url}" target="_blank" style="color:var(--gold);text-decoration:none;font-weight:600">[{signal:+.1f}%] {label}</a><br>'
+                        f'<span style="color:var(--muted);font-size:.62rem">{title}</span></div>'
                     )
+
+                no_highlight_html = "<div style='font-size:.65rem;color:var(--muted);margin-top:.5rem'>Buscando las mejores ofertas...</div>"
+                
+                col_context.markdown(
+                    f'<div style="background:var(--surface2);border:1px solid var(--border);'
+                    f'padding:.8rem;border-radius:6px;margin-bottom:1rem;min-height:150px">'
+                    f'<div style="font-size:.62rem;color:var(--muted);text-transform:uppercase;display:flex;justify-content:space-between;letter-spacing:1px">'
+                    f'<span>{icon} {pname}</span> <span style="color:var(--ink);font-weight:bold">{ofertas:,}</span></div>'
+                    f'<div style="margin-top:.5rem;border-top:1px solid rgba(255,255,255,.05);padding-top:.4rem">'
+                    f'{links_html if links_html else no_highlight_html}</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+            # Renderizar Principales
+            pcols = st.columns(min(len(main_gps), 4))
+            for i, (_, row) in enumerate(main_gps.iterrows()):
+                render_portal_card(row, pcols[i])
+
+            # Renderizar Secundarios en un expansor si existen
+            if not secondary_gps.empty:
+                with st.expander("Ver otros portales y fuentes de datos"):
+                    scols = st.columns(4)
+                    for i, (_, row) in enumerate(secondary_gps.iterrows()):
+                        render_portal_card(row, scols[i % 4])
 
         st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
         inv1, inv2 = st.columns(2)

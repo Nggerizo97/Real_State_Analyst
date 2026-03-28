@@ -1,82 +1,97 @@
-# Real State Analyst (AI & Data Platform)
+# Real Estate Intelligence Platform (AI-Analyst)
 
-Proyecto de Ingeniería de Datos y Analytics para el sector inmobiliario con enfoque **"Zero Cost"** (Maximizando Free Tiers) impulsado por modelos de Machine Learning y un Agente de Inteligencia Artificial RAG.
+A professional-grade Data Engineering and Analytics platform for the real estate market. This project follows a **"Zero-Cost"** architectural philosophy, maximizing free tiers (AWS, GitHub Actions) while delivering high-value insights through Machine Learning and RAG-based AI.
 
-## 🚀 Arquitectura
-1. **Scraping Multi-Portal**: Extracción tolerante a fallos y anti-baneos usando Playwright (Facebook, MercadoLibre, Finca Raiz, etc.).
-2. **Almacenamiento (Capa Medallion)**: Amazon S3 (Bronze, Silver, Gold Data Layers usando `fastparquet`).
-3. **Machine Learning (Predictive Scoring)**: Pipeline v2 en Scikit-learn para predecir precios basados en atributos y NLP (texto_completo). Calcula la *Rentabilidad Potencial*.
-4. **Agente Conversacional (RAG)**: UI en Streamlit conectada a un LLM (Ollama/Llama3/Mistral) para realizar consultas inmobiliarias expertas y estratégicas sobre el portafolio en S3 sin alucinaciones.
-5. **Infraestructura y Orquestación**: GitHub Actions (Cron Jobs) y Terraform.
+## 🚀 Key Features
 
-## 📁 Estructura del Proyecto
+### 1. Fault-Tolerant Multi-Portal Scraping
+- **Anti-Bot Resilience**: Built on Playwright for robust extraction from major portals (Finca Raiz, Metrocuadrado, MercadoLibre, Ciencuadras, etc.).
+- **Checkpoint System**: Integrated `CheckpointManager` allows scrapers to resume from the last completed page, preventing data loss and redundant operations.
+- **Auto-Ingestion**: Scheduled via GitHub Actions CRON jobs for continuous market monitoring.
+
+### 2. Medallion Data Architecture (S3)
+- **Bronze Layer**: Raw JSON/Parquet extracted from portals.
+- **Silver Layer**: Cleaned and normalized records with coordinated deduplication.
+- **Gold Layer**: Analytics-ready dataset with predictive scores and cross-portal metrics.
+
+### 3. AI-Driven Market Intelligence
+- **XGBoost Valuation Model**: Predicts Fair Market Value based on physical attributes and NLP-processed titles/descriptions.
+- **Opportunity Signals**: Calculates an **"Opportunity Match" (Signal %)** to identify properties listed significantly below estimated market value.
+- **Fingerprint-Based Deduplication**: Merges duplicate listings across different portals by verifying physical attributes (Fingerprint), providing a unified market view.
+
+### 4. Interactive Dashboard & RAG Agent
+- **Market Gallery**: A didactic UI highlighting top opportunities with direct links to original listings.
+- **AI Chatbot (Premium Mode)**: RAG-powered agent for expert consultations on real estate strategy (currently gated for demo mode).
+- **Interpretive Guide**: Human-friendly labeling (e.g., "Oportunidad de ahorro") for non-technical users.
+
+## 🏗️ Architecture
+
+```mermaid
+graph TD
+    A[Web Portals] -->|Playwright Scrapers| B(Bronze: S3 Raw)
+    B -->|Checkpoints & Hash Persistence| C(Silver: S3 Clean)
+    C -->|Fingerprint Deduplication| D(Gold: S3 Analytics)
+    D -->|ML Scoring: XGBoost| E[Streamlit Dashboard]
+    E -->|RAG Agent & Bedrock| F[User Interaction]
+    
+    subgraph "S3 Medallion Layers"
+    B
+    C
+    D
+    end
+```
+
+## 📁 Project Structure
 ```text
 Real_State_Analyst/
-├── app.py                  # Streamlit App: Dashboard Analítico & Chatbot RAG
+├── app.py                  # Streamlit Dashboard & UI Logic
 ├── src/
-│   ├── scrapers/           # Lógica de Extracción de cada portal
-│   └── utils/              # Conectores de S3, Logging, Configuración estática
-├── config/                 # Configuraciones de portales (settings.py)
-├── infrastructure/         # Terraform para recursos AWS (IAM, Least Privilege Policies)
-├── .github/workflows/      # CI/CD y Cron Jobs Automáticos
-└── README.md               # Esta documentación
+│   ├── scrapers/           # Modular portal scrapers with Checkpoint support
+│   ├── utils/              # S3 Connectors, Scorer, and Checkpoint Manager
+│   └── ai/                 # RAG logic and LLM orchestration
+├── config/                 # Portal-specific settings and models
+├── infrastructure/         # Terraform for AWS (IAM, S3)
+└── .github/workflows/      # Automated Scraper Cron Jobs
 ```
 
-## 💡 Mecanismos Anti-Costos e Inteligencia artificial
-* **Sistema RAG Estricto**: El chatbot de Streamlit hace un filtro Pandas on-the-fly (`busqueda_rag_local`) para inyectar contexto duro al LLM, evitando invenciones de locaciones o precios irreales.
-* **Procesamiento de Datos Eficiente**: Pandas y PyArrow leen nativamente la carpeta Gold en S3 sin descargar ficheros uno por uno, optimizando el uso de memoria RAM.
-* **Deduplicación en Origen (AWS)**: Los scrapers evitan re-descargar o re-insertar inmuebles duplicados para mantener el bucket S3 en la capa gratuita.
+## 🛠️ Getting Started
 
-## 🔐 Configuración de Secretos en GitHub (DevOps & DataOps)
+### 1. Prerequisites
+- Python 3.11
+- AWS Account (S3 Bucket)
+- LLM Provider (AWS Bedrock, Ollama, or Groq)
 
-Para ejecutar la recolección automática en la nube de GitHub Actions (`.github/workflows/scraper_cron.yml`) y encadenarlo (CI/CD) con el procesamiento de Databricks, necesitas configurar los siguientes secretos en tu repositorio:
+# Install dependencies
+pip install -r requirements.txt
+playwright install chromium
 
-Navega a la configuración de tu repositorio en GitHub:
-`Settings > Secrets and variables > Actions > New repository secret` y agrega:
-
-### AWS (Almacenamiento Bronze)
-1. `AWS_ACCESS_KEY_ID`: Tu llave de acceso de IAM en AWS.
-2. `AWS_SECRET_ACCESS_KEY`: Tu llave secreta de IAM.
-3. `S3_BUCKET_NAME`: El nombre de tu bucket de S3 donde residirá la capa Bronze (ej. `mi-bucket-bronze-real-estate`).
-4. `AWS_REGION` *(Opcional)*: Por default usa `us-east-1` (modificar en GitHub Action directamente si es necesario).
-
-### Databricks (DataOps & ML Retrain)
-1. `DATABRICKS_HOST`: La URL de tu workspace de Databricks (ej: `https://adb-123...azuredatabricks.net`).
-2. `DATABRICKS_TOKEN`: Tu token de acceso personal (PAT) de la API de Databricks.
-3. `DATABRICKS_JOB_ID`: El ID numérico entero de tu cluster/pipeline ETL (ej: `13516656597401`).
-
-### 2. Secretos de la Aplicación Streamlit (RAG)
-Debes crear `.streamlit/secrets.toml` para conectar la aplicación:
+### 2. Environment Setup
+Create a `.streamlit/secrets.toml` file:
 ```toml
 [aws]
-aws_access_key_id = "TU_LLAVE"
-aws_secret_access_key = "TU_SECRETO"
+aws_access_key_id = "YOUR_KEY"
+aws_secret_access_key = "YOUR_SECRET"
 aws_region = "us-east-1"
-s3_bucket_name = "tu-bucket"
+s3_bucket_name = "your-bucket-name"
 
 [llm]
-api_base = "http://localhost:11434/v1" # O Groq/OpenRouter
-api_key = "ollama"
-model_name = "llama3"
+model_name = "us.amazon.llama3-1-70b-instruct-v1:0" # example Bedrock ARN
+bedrock_region = "us-east-1"
 ```
 
-## 🛠️ Cómo ejecutar de forma local
-
-**1. Instalar dependencias:**
+### 3. Running the Platform
 ```bash
-pip install -r scrapers/requirements.txt
-# Asegúrate de instalar dependencias de la UI si no están incluidas:
-pip install streamlit pandas numpy boto3 joblib plotly openai s3fs
-playwright install chromium
-```
-
-**2. Levantar el Agente Inteligente (UI):**
-Asegúrate de tener corriendo tu motor LLM local (ej. `ollama run llama3`) u obtener llaves de nube, y ejecuta:
-```bash
+# Start the Dashboard
 python -m streamlit run app.py
-```
 
-**3. Ejecutar los Web Scrapers individualmente (Testing):**
-```bash
+# Run a specific scraper for testing
 python main.py
 ```
+
+## 🔐 Security & Optimization
+- **Least Privilege**: Terraform-managed IAM policies ensure minimal access to S3.
+- **Memory Optimized**: Uses `PyArrow` and `S3FS` for stream-reading Parquet files without full local downloads.
+- **Demo Mode**: Includes feature gates to control access to premium AI capabilities during demonstrations.
+
+---
+*Created by the Real Estate Analyst Team. Focused on making Data-Driven decisions accessible.*

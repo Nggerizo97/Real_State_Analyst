@@ -25,8 +25,9 @@ class MercadoLibreScraper(BaseScraper):
     def scrape_pages(self, page: Page, max_pages: int) -> None:
         base_url = f"{self.base_url}/inmuebles/venta/_NoIndex_True"
         previous_page_ids = set()
+        end_page = self.start_page + max_pages
 
-        for current_page in range(1, max_pages + 1):
+        for current_page in range(self.start_page, end_page):
             if current_page == 1:
                 url = base_url
             else:
@@ -35,7 +36,7 @@ class MercadoLibreScraper(BaseScraper):
                 url = f"{self.base_url}/inmuebles/venta/_Desde_{offset}_NoIndex_True"
 
             self.logger.info(
-                f"Página {current_page}/{max_pages}: {url[:100]}"
+                f"ML — Página {current_page}/{end_page - 1}: {url[:100]}"
             )
 
             try:

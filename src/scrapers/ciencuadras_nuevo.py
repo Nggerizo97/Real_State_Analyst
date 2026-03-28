@@ -54,8 +54,9 @@ class CiencuadrasNuevoScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     def _scrape_pages(self, page: Page, max_pages: int) -> None:
-        for current_page in range(1, max_pages + 1):
-            self.logger.info(f"CC-Nuevo — Página {current_page}/{max_pages}")
+        end_page = self.start_page + max_pages
+        for current_page in range(self.start_page, end_page):
+            self.logger.info(f"CC-Nuevo — Página {current_page}/{end_page - 1}")
 
             self.human_delay(page, 2000, 4000)
 
@@ -83,11 +84,12 @@ class CiencuadrasNuevoScraper(BaseScraper):
             self.logger.info(f"Resultados p{current_page}: {nuevos} nuevos/actualizados.")
 
             # Flush periódico
-            self.on_page_done()
+            self.on_page_done(current_page)
 
-            if current_page < max_pages:
+            if current_page < end_page - 1:
                 if not self._click_next(page, current_page):
                     self.logger.info("Fin de paginación natural.")
+                    self.checkpoint.clear()
                     break
             else:
                 self.logger.info(f"Límite {max_pages} alcanzado.")

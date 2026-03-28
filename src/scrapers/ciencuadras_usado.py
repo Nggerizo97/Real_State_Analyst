@@ -56,27 +56,10 @@ class CiencuadrasUsadoScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     def _scrape_pages(self, page: Page, max_pages: int) -> None:
-        # Retomar desde checkpoint si existe
-        last_completed = self.checkpoint.load()
-        start_page = (last_completed or 0) + 1
-        total_scraped = 0
-
-        if last_completed:
-            self.logger.info(
-                f"Retomando desde página {start_page} "
-                f"(checkpoint: última completada = {last_completed})"
-            )
-            if not self._navigate_to_page(page, last_completed + 1):
-                self.logger.error(
-                    f"No se pudo navegar directamente a la página {start_page}. "
-                    "Se intentará avanzar secuencialmente o empezar desde 1."
-                )
-                # No borramos el checkpoint aquí, dejamos que _navigate_to_page maneje el fallback
-        
-        end_page = start_page + max_pages - 1
+        end_page = self.start_page + max_pages
         finished_cleanly = False
 
-        for current_page in range(start_page, end_page + 1):
+        for current_page in range(self.start_page, end_page):
             self.logger.info(f"CC-Usado — Página {current_page} (batch hasta {end_page})")
 
             self.human_delay(page, 2000, 4000)
@@ -103,14 +86,13 @@ class CiencuadrasUsadoScraper(BaseScraper):
                 if self._extract_property(card_link):
                     nuevos_en_pagina += 1
             
-            total_scraped += nuevos_en_pagina
+            total_scraped = nuevos_en_pagina
             self.logger.info(f"Resultados p{current_page}: {nuevos_en_pagina} nuevos/actualizados.")
 
             # Flush periódico y guardar checkpoint después de cada página
-            self.on_page_done()
-            self.checkpoint.save(last_page=current_page, total_scraped=total_scraped)
+            self.on_page_done(current_page)
 
-            if current_page < end_page:
+            if current_page < end_page - 1:
                 self.logger.info(f"Intentando avanzar a la página {current_page + 1}...")
                 if not self._click_next(page, current_page):
                     self.logger.info("Fin de paginación natural.")

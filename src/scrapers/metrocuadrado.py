@@ -43,9 +43,10 @@ class MetrocuadradoScraper(BaseScraper):
             self.logger.error("No se pudo cargar la página inicial de Metrocuadrado.")
             return
 
-        for current_page in range(1, max_pages + 1):
+        end_page = self.start_page + max_pages
+        for current_page in range(self.start_page, end_page):
             self.logger.info(
-                f"MC — Página {current_page}/{max_pages}: {page.url[:100]}..."
+                f"MC — Página {current_page}/{end_page - 1}: {page.url[:100]}..."
             )
 
             self.human_delay(page, 2000, 4000)
@@ -64,11 +65,14 @@ class MetrocuadradoScraper(BaseScraper):
                         new_count += 1
                 self.logger.info(f"Resultados de página {current_page}: {new_count} nuevos/actualizados.")
 
+            self.on_page_done(current_page)
+
             # Navegar a la siguiente página (Mandato de Recorrido Total)
-            if current_page < max_pages:
+            if current_page < end_page - 1:
                 self.logger.info(f"Intentando avanzar a la página {current_page + 1}...")
                 if not self._click_next(page, current_page):
                     self.logger.info("Fin de resultados naturales (Paginador no encontrado o inactivo).")
+                    self.checkpoint.clear()
                     break
             else:
                 self.logger.info(f"Límite {max_pages} alcanzado.")

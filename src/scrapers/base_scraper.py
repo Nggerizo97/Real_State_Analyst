@@ -27,6 +27,7 @@ from playwright.sync_api import Page, sync_playwright
 from config.settings import S3_BRONZE_PREFIX
 from src.utils.logger import get_logger
 from src.utils.s3_connector import S3Connector
+from src.utils.checkpoint import CheckpointManager
 
 # ---------------------------------------------------------------------------
 # Configuración de Resiliencia Local
@@ -110,11 +111,15 @@ class BaseScraper(ABC):
         self.s3 = S3Connector()
         self.logger = get_logger(self.__class__.__name__)
         self.prefix = f"{S3_BRONZE_PREFIX}/{self.portal_name}"
+        self.checkpoint = CheckpointManager(self.portal_name)
 
         # Estado en RAM
         self.scraped_data: List[Dict[str, Any]] = []
         self.total_processed_in_run: List[Dict[str, Any]] = [] # Para el Parquet final
-        
+        self.start_page = 1
+        self.current_page = 1
+        self.hash_index_loaded = False  # Para evitar sobreescribir con set vacío por error
+
         # Hashes (SCD Type 2)
         self.hash_index_key = f"{self.prefix}/_hash_index.txt"
         self.historical_hashes: Set[str] = set()
@@ -139,8 +144,12 @@ class BaseScraper(ABC):
         self.logger.info(f"  Iniciando scraper: {self.portal_name}")
         self.logger.info(f"{'=' * 60}")
 
-        # 1. Cargar hashes (Prioridad S3, fallback Local)
+        # 1. Cargar hashes y checkpoint
         self._load_hashes()
+        last_completed = self.checkpoint.load()
+        self.start_page = (last_completed + 1) if last_completed is not None else 1
+        self.current_page = self.start_page
+        self.logger.info(f"Punto de partida: Página {self.start_page}")
 
         # 2. Preparar CSV local
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -203,6 +212,7 @@ class BaseScraper(ABC):
         self.logger.info("Cargando memoria de hashes...")
         try:
             self.historical_hashes = self.s3.download_hash_index(self.hash_index_key)
+            self.hash_index_loaded = True
         except Exception as e:
             self.logger.warning(f"No se pudo cargar hashes de S3: {e}. Usando fallback local...")
             local_path = LOCAL_HASHES_DIR / f"{self.portal_name}_hash_index.txt"
@@ -231,7 +241,13 @@ class BaseScraper(ABC):
             if self.s3.upload_parquet(parquet_key, df):
                 self.logger.info("Batch Parquet subido exitosamente.")
                 self.logger.info("Actualizando índice de hashes en S3...")
-                self.s3.upload_hash_index(self.hash_index_key, self.historical_hashes)
+                
+                # Sincronizar hashes
+                if self.hash_index_loaded:
+                    self.s3.upload_hash_index(self.hash_index_key, self.historical_hashes)
+                else:
+                    self.logger.warning("No se suben hashes porque no se cargaron correctamente al inicio.")
+
             else:
                 self.logger.error("Fallo al subir Parquet a S3.")
         
@@ -248,12 +264,15 @@ class BaseScraper(ABC):
     # Gestión de Flushes (Llamar desde el spider cada página)
     # ------------------------------------------------------------------
 
-    def on_page_done(self):
+    def on_page_done(self, page_num: int):
         """Llamar al terminar cada página para gestión de resiliencia."""
+        self.current_page = page_num
         self._pages_since_flush += 1
         if self._pages_since_flush >= FLUSH_EVERY:
             self._flush_to_csv()
             self._save_hashes_local()
+            # Guardar checkpoint parcial en S3
+            self.checkpoint.save(self.current_page, len(self.total_processed_in_run))
             self._pages_since_flush = 0
 
     def _flush_to_csv(self):

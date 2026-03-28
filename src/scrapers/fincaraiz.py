@@ -30,14 +30,15 @@ class FincaRaizScraper(BaseScraper):
 
     def scrape_pages(self, page: Page, max_pages: int) -> None:
         previous_page_ids = set()
-        for current_page in range(1, max_pages + 1):
+        end_page = self.start_page + max_pages
+        for current_page in range(self.start_page, end_page):
             if current_page == 1:
                 url = f"{self.base_url}{self.listing_path}"
             else:
                 url = f"{self.base_url}{self.listing_path}/pagina{current_page}"
 
             self.logger.info(
-                f"FR — Página {current_page}/{max_pages}: {url}"
+                f"FR — Página {current_page}/{end_page - 1}: {url}"
             )
 
             # Hasta 3 reintentos por fallas efímeras de red

@@ -109,11 +109,12 @@ class BancolombiaTu360Scraper(BaseScraper):
         Fase 2 — Click "Mostrar más" desde la última página buena.
         """
         # --- Fase 1: paginación por URL ---
-        page_num = 1
+        page_num = self.start_page
+        end_page = self.start_page + max_pages
         consecutive_empty = 0
         previous_total_dom = 0
 
-        while page_num <= max_pages:
+        while page_num < end_page:
             page_url = f"{url}?page={page_num}"
 
             try:

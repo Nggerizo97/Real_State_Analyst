@@ -95,7 +95,7 @@ class ProperatiScraper(BaseScraper):
             nuevos = sum(1 for item in items if self._extract_property(item, city))
             self.logger.info(f"[{city}] Página {current_page}: {nuevos} nuevos.")
 
-            self.on_page_done()
+            self.on_page_done(current_page)
             current_page += 1
 
     # ------------------------------------------------------------------

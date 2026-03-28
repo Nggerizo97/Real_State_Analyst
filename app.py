@@ -420,12 +420,64 @@ def _clean_gold(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = np.nan
 
+    # --- DEDUPLICACIÓN POR FINGERPRINT (RE-APLICACIÓN) ---
+    count_before = len(df)
+    # 1. Crear fingerprint físico
+    df["_area_round"] = df["area_m2"].round(0)
+    df["fingerprint"] = (
+        df["city_token"].astype(str).str.lower() + "_" +
+        df["ubicacion_clean"].astype(str).str.lower() + "_" +
+        df["precio_num"].astype(str) + "_" +
+        df["_area_round"].astype(str) + "_" +
+        df["habitaciones"].fillna(0).astype(int).astype(str)
+    )
+
+    # 2. Agrupar y calcular métricas de grupo
+    group_stats = df.groupby("fingerprint").agg(
+        num_portales_calc=("id_inmueble" if "id_inmueble" in df.columns else "id_original", "nunique"),
+        precio_min_grupo_calc=("precio_num", "min"),
+        precio_max_grupo_calc=("precio_num", "max"),
+        precio_mediano_grupo_calc=("precio_num", "median")
+    ).reset_index()
+    
+    group_stats["dispersion_pct_grupo_calc"] = (
+        (group_stats["precio_max_grupo_calc"] - group_stats["precio_min_grupo_calc"]) / 
+        group_stats["precio_mediano_grupo_calc"].replace(0, 1)
+    ) * 100
+
+    # 3. Quedarse con un representante
+    df["_info_len"] = df.get("url", pd.Series([""]*len(df))).str.len().fillna(0) + \
+                      df.get("titulo", pd.Series([""]*len(df))).str.len().fillna(0)
+    df = df.sort_values(by=["fingerprint", "_info_len"], ascending=[True, False])
+    
+    df_dedup = df.drop_duplicates(subset="fingerprint", keep="first").copy()
+    count_after = len(df_dedup)
+    
+    # 4. Mapear métricas calculadas
+    # Usamos merge para mayor robustez
+    df_dedup = df_dedup.drop(columns=["num_portales", "precio_min_grupo", "precio_max_grupo", "precio_mediano_grupo", "dispersion_pct_grupo"], errors="ignore")
+    
+    group_stats_map = group_stats.rename(columns={
+        "num_portales_calc": "num_portales",
+        "precio_min_grupo_calc": "precio_min_grupo",
+        "precio_max_grupo_calc": "precio_max_grupo",
+        "precio_mediano_grupo_calc": "precio_mediano_grupo",
+        "dispersion_pct_grupo_calc": "dispersion_pct_grupo"
+    })
+    
+    df_dedup = df_dedup.merge(group_stats_map, on="fingerprint", how="left")
+
+    print(f"DEBUG DEDUP: {count_before} -> {count_after} registros.")
+
+    # Limpiar columnas auxiliares
+    df_dedup = df_dedup.drop(columns=["_area_round", "fingerprint", "_info_len"], errors="ignore")
+
     # Columnas opcionales de granularidad fina
     for col in ["comuna_mercado", "sector_mercado"]:
-        if col not in df.columns:
-            df[col] = np.nan
+        if col not in df_dedup.columns:
+            df_dedup[col] = np.nan
 
-    return df.reset_index(drop=True)
+    return df_dedup.reset_index(drop=True)
 
 
 def _dummy_df() -> pd.DataFrame:

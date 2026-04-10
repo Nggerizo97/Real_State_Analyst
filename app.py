@@ -477,11 +477,11 @@ pre_scored = "rentabilidad_potencial" in raw_df.columns and "estado_inversion" i
 
 if "master_db" not in st.session_state:
     if pre_scored:
-        st.session_state.master_db = raw_df.copy()
+        st.session_state.master_db = raw_df
     else:
         bundle = load_model_bundle(manifest)
         with st.spinner("Calculando señales (Fallback a XGBoost local)..."):
-            st.session_state.master_db = score_dataframe(raw_df.copy(), bundle)
+            st.session_state.master_db = score_dataframe(raw_df, bundle)
 
 # El bundle se carga como None inicialmente si ya hay pre-scored (ahorro RAM)
 if "bundle" not in st.session_state:

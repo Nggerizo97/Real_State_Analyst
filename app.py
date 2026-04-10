@@ -15,6 +15,8 @@ import sys
 import tempfile
 import re
 import warnings
+import time
+import tracemalloc
 
 # Asegurar que el directorio raíz está en el path para imports
 sys.path.append(os.getcwd())
@@ -298,11 +300,16 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
     """Lee una tabla Gold desde S3. Retorna None si no existe."""
     try:
         bucket = st.secrets["aws"]["s3_bucket_name"]
-        return pd.read_parquet(
+        print(f"[REABOOT] Iniciando descarga S3: {table_name}", flush=True)
+        t0 = time.time()
+        df = pd.read_parquet(
             f"s3://{bucket}/gold/{table_name}/",
             storage_options=_s3_storage_options(),
         )
-    except Exception:
+        print(f"[REABOOT] EXITO S3: {table_name} descargado en {time.time()-t0:.2f}s. Shape: {df.shape}", flush=True)
+        return df
+    except Exception as e:
+        print(f"[REABOOT] ERROR S3 {table_name}: {e}", flush=True)
         return None
 
 
@@ -466,11 +473,20 @@ def _dummy_df() -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════════
 # CARGA INICIAL
 # ══════════════════════════════════════════════════════════════════
+print("\n[REABOOT] 🚀 === INICIANDO BOOT DE APP.PY ===", flush=True)
+tracemalloc.start()
+
 raw_df = load_gold()
+curr, peak = tracemalloc.get_traced_memory()
+print(f"[REABOOT] MEMORY AFTER load_gold(): Current {curr/1e6:.1f}MB, Peak {peak/1e6:.1f}MB", flush=True)
+
 manifest = load_manifest()
 gold_analitica = load_mercado_analitica()
 gold_sectorial = load_mercado_sectorial()
 gold_portales  = load_portal_operacion()
+
+curr, peak = tracemalloc.get_traced_memory()
+print(f"[REABOOT] MEMORY AFTER ALL Caches: Current {curr/1e6:.1f}MB, Peak {peak/1e6:.1f}MB", flush=True)
 
 # Solo cargar modelo pesado si la data NO viene pre-costeada de Databricks
 pre_scored = "rentabilidad_potencial" in raw_df.columns and "estado_inversion" in raw_df.columns

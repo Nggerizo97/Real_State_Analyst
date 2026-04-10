@@ -17,6 +17,8 @@ import re
 import warnings
 import time
 import tracemalloc
+import s3fs
+import pyarrow.dataset as ds
 
 # Asegurar que el directorio raíz está en el path para imports
 sys.path.append(os.getcwd())
@@ -297,16 +299,41 @@ def _s3_storage_options():
     }
 
 def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
-    """Lee una tabla Gold desde S3. Retorna None si no existe."""
+    """Lee una tabla Gold desde S3 optimizando RAM mediante poda de columnas e instancias duplicadas."""
     try:
         bucket = st.secrets["aws"]["s3_bucket_name"]
         print(f"[REABOOT] Iniciando descarga S3: {table_name}", flush=True)
         t0 = time.time()
-        df = pd.read_parquet(
-            f"s3://{bucket}/gold/{table_name}/",
-            storage_options=_s3_storage_options(),
+        
+        fs = s3fs.S3FileSystem(
+            key=st.secrets["aws"]["aws_access_key_id"],
+            secret=st.secrets["aws"]["aws_secret_access_key"]
         )
-        print(f"[REABOOT] EXITO S3: {table_name} descargado en {time.time()-t0:.2f}s. Shape: {df.shape}", flush=True)
+        s3_path = f"{bucket}/gold/{table_name}/"
+        
+        dataset = ds.dataset(s3_path, filesystem=fs, format="parquet")
+        all_cols = dataset.schema.names
+        
+        ui_cols = [
+            "id_original", "id_inmueble", "city_token", "market_token", "ubicacion_norm", "ubicacion_raw", "ubicacion_clean",
+            "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
+            "fuente", "url", "titulo", "rentabilidad_potencial", "estado_inversion", "comuna_mercado", "sector_mercado",
+            "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2"
+        ]
+        
+        cols_to_load = [c for c in ui_cols if c in all_cols]
+        print(f"[REABOOT] Extrayendo {len(cols_to_load)} de {len(all_cols)} columnas...", flush=True)
+        
+        table = dataset.to_table(columns=cols_to_load)
+        df = table.to_pandas()
+        
+        # Supervivencia estricta para matar duplicados del Lakehouse
+        if "id_original" in df.columns:
+            df = df.drop_duplicates(subset=["id_original"], keep="last")
+        elif "id_inmueble" in df.columns:
+            df = df.drop_duplicates(subset=["id_inmueble"], keep="last")
+            
+        print(f"[REABOOT] EXITO S3: {table_name} descargado en {time.time()-t0:.2f}s. Shape RAM final: {df.shape}", flush=True)
         return df
     except Exception as e:
         print(f"[REABOOT] ERROR S3 {table_name}: {e}", flush=True)

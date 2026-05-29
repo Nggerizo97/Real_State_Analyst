@@ -11,12 +11,17 @@ app.py — Real Estate Analyst Colombia
 import io
 import json
 import os
+import re
 import sys
 import tempfile
-import re
-import warnings
 import time
 import tracemalloc
+import warnings
+
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None  # type: ignore
 import s3fs
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -89,6 +94,83 @@ def fmt_cop(val):
     if pd.isna(val) or val is None:
         return "—"
     return f"${int(val):,}".replace(",", ".")
+
+# ══════════════════════════════════════════════════════════════════
+# API CLIENT (opcional — activo sólo si REA_API_URL está definido)
+# Cuando la variable de entorno REA_API_URL apunta al backend FastAPI,
+# las consultas de búsqueda y predicción se delegan al API en lugar de
+# acceder directamente a S3 / PyArrow.  Si la variable no existe o el
+# módulo requests no está instalado, se usa el camino directo (S3).
+# ══════════════════════════════════════════════════════════════════
+
+REA_API_URL: str = os.getenv("REA_API_URL", "").rstrip("/")
+_API_TIMEOUT = 30  # segundos
+
+
+def _api_available() -> bool:
+    return bool(REA_API_URL) and _requests is not None
+
+
+def api_search(
+    cities: list,
+    price_min: float,
+    price_max: float,
+    tipo_inmueble: str | None = None,
+    area_min: float | None = None,
+    area_max: float | None = None,
+    habitaciones_min: int | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> pd.DataFrame:
+    """Llama a POST /search y devuelve un DataFrame compatible con el formato Gold."""
+    payload = {
+        "price_min": price_min,
+        "price_max": price_max,
+        "limit": limit,
+        "offset": offset,
+    }
+    if cities:
+        payload["city_token"] = cities[0]  # /search filtra por una ciudad a la vez
+    if tipo_inmueble:
+        payload["tipo_inmueble"] = tipo_inmueble
+    if area_min is not None:
+        payload["area_min"] = area_min
+    if area_max is not None:
+        payload["area_max"] = area_max
+    if habitaciones_min is not None:
+        payload["habitaciones_min"] = habitaciones_min
+
+    try:
+        resp = _requests.post(
+            f"{REA_API_URL}/search",
+            json=payload,
+            timeout=_API_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("items", [])
+        return pd.DataFrame(items) if items else pd.DataFrame()
+    except Exception as exc:
+        st.warning(f"API no disponible, usando S3 directo: {exc}")
+        return pd.DataFrame()
+
+
+def api_predict(row: dict) -> dict | None:
+    """Llama a POST /predict y devuelve el dict de valoración."""
+    if not _api_available():
+        return None
+    try:
+        resp = _requests.post(
+            f"{REA_API_URL}/predict",
+            json=row,
+            timeout=_API_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        st.warning(f"API /predict falló, usando scorer local: {exc}")
+        return None
+
 
 # ══════════════════════════════════════════════════════════════════
 # CLIENTES Y CARGA (S3, Bedrock, Ollama)

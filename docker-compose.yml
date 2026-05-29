@@ -1,0 +1,55 @@
+# docker-compose.yml
+# Levanta la API FastAPI + el frontend Streamlit en contenedores separados.
+#
+# Prerequisito: crear un archivo .env en la raíz con:
+#   AWS_ACCESS_KEY_ID=...
+#   AWS_SECRET_ACCESS_KEY=...
+#   AWS_REGION=us-east-1
+#   S3_BUCKET=bronce-scrap-date
+
+version: "3.9"
+
+services:
+  # ─── Backend API ────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: rea-api:latest
+    container_name: rea_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/src
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s   # tiempo para que el modelo cargue desde S3
+    restart: unless-stopped
+
+  # ─── Frontend Streamlit ─────────────────────────────────────────────────────
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile   # Dockerfile existente del proyecto
+    image: rea-streamlit:latest
+    container_name: rea_streamlit
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      # Apuntar al servicio API interno (nombre del servicio Docker)
+      - REA_API_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  default:
+    name: rea_network

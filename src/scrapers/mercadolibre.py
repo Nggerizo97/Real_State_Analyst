@@ -27,6 +27,9 @@ class MercadoLibreScraper(BaseScraper):
         previous_page_ids = set()
         end_page = self.start_page + max_pages
 
+        # Warm-up: visit homepage before listings to appear as a natural user
+        self._warmup(page)
+
         for current_page in range(self.start_page, end_page):
             if current_page == 1:
                 url = base_url
@@ -45,6 +48,13 @@ class MercadoLibreScraper(BaseScraper):
                 self.logger.error(f"Error al navegar a la página {current_page}: {e}")
                 self.human_delay(page=None, min_ms=5000, max_ms=10000)
                 continue
+
+            # Detect login wall / bot-detection redirect
+            if any(t in page.url for t in ("account-verification", "loginType=", "/login")):
+                self.logger.warning(
+                    f"Redirigido a verificación en página {current_page}: {page.url[:80]}"
+                )
+                break
 
             self.human_delay(page)
 
@@ -81,11 +91,28 @@ class MercadoLibreScraper(BaseScraper):
             self.human_delay(page, 1500, 3000)
 
     # ------------------------------------------------------------------
+    # Warm-up navigation
+    # ------------------------------------------------------------------
+
+    def _warmup(self, page: Page) -> None:
+        """Visit ML homepage before scraping to simulate natural navigation."""
+        try:
+            self.logger.info("Warm-up: visitando homepage de MercadoLibre...")
+            page.goto("https://www.mercadolibre.com.co", wait_until="domcontentloaded", timeout=30_000)
+            self.human_delay(page, 3000, 5000)
+        except Exception as e:
+            self.logger.warning(f"Warm-up falló (ignorando): {e}")
+
+    # ------------------------------------------------------------------
     # Espera de items con fallback
     # ------------------------------------------------------------------
 
     def _wait_for_items(self, page: Page):
         """Espera y retorna los items con selector principal + fallback."""
+        # Abort immediately if we're on a login/verification wall
+        if any(t in page.url for t in ("account-verification", "loginType=", "/login")):
+            self.logger.warning("Login wall detectado (negative_traffic). Deteniendo.")
+            return []
         try:
             page.wait_for_selector(
                 "li.ui-search-layout__item", timeout=15_000

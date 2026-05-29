@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Set
 
 import pandas as pd
 from playwright.sync_api import Page, sync_playwright
+from playwright_stealth import Stealth
 
 from config.settings import S3_BRONZE_PREFIX
 from src.utils.logger import get_logger
@@ -167,7 +168,12 @@ class BaseScraper(ABC):
         proxy_url = os.getenv("PROXY_URL")
         proxy_config = {"server": proxy_url} if proxy_url else None
 
-        with sync_playwright() as p:
+        stealth = Stealth(
+            navigator_languages_override=("es-CO", "es", "en-US", "en"),
+            navigator_platform_override="Win32",
+            navigator_user_agent_override=ua,
+        )
+        with stealth.use_sync(sync_playwright()) as p:
             browser = p.chromium.launch(
                 headless=headless,
                 proxy=proxy_config,

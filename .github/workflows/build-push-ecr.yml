@@ -53,19 +53,24 @@ jobs:
 
       # ── 4. Crear repos ECR si no existen ────────────────────────────────────
       - name: Ensure ECR repositories exist
-        env:
-          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
           for REPO in $ECR_REPO_API $ECR_REPO_STREAMLIT; do
-            aws ecr describe-repositories \
-              --repository-names "$REPO" \
-              --region "$AWS_REGION" 2>/dev/null \
-            || aws ecr create-repository \
-              --repository-name "$REPO" \
-              --region "$AWS_REGION" \
-              --image-scanning-configuration scanOnPush=true \
-              --image-tag-mutability MUTABLE
-            echo "✓ Repositorio ECR listo: $REPO"
+            if aws ecr describe-repositories \
+                 --repository-names "$REPO" \
+                 --region "$AWS_REGION" \
+                 --query 'repositories[0].repositoryName' \
+                 --output text 2>/dev/null | grep -q "$REPO"; then
+              echo "✓ Repositorio ya existe: $REPO"
+            else
+              echo "→ Creando repositorio: $REPO"
+              aws ecr create-repository \
+                --repository-name "$REPO" \
+                --region "$AWS_REGION" \
+                --image-scanning-configuration scanOnPush=true \
+                --image-tag-mutability MUTABLE \
+              && echo "✓ Repositorio creado: $REPO" \
+              || { echo "✗ No se pudo crear '$REPO'. Créalo manualmente en ECR y vuelve a ejecutar."; exit 1; }
+            fi
           done
 
       # ── 5. Metadatos de la imagen (tag = short SHA + latest) ────────────────

@@ -116,6 +116,64 @@ data "aws_iam_policy_document" "github_bot_ecr_policy_doc" {
     ]
     resources = ["*"]
   }
+
+  # ── Estado remoto de Terraform en S3 ─────────────────────────────────────
+  # El workflow de Terraform guarda el estado en s3://bucket/terraform-state/
+  # El bot necesita leer y escribir ese prefijo para que `terraform init` y
+  # `terraform apply` funcionen en CI.
+  statement {
+    sid = "TerraformStateS3"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:ListBucket",
+      "s3:GetBucketVersioning",
+    ]
+    resources = [
+      "arn:aws:s3:::${var.s3_bucket_name}",
+      "arn:aws:s3:::${var.s3_bucket_name}/terraform-state/*",
+    ]
+  }
+
+  # Terraform necesita permisos para crear/modificar todos los recursos
+  # que gestiona (ECS, IAM, ECR, CloudWatch, Service Discovery).
+  # Esta política amplia es segura porque el usuario sólo se usa en CI.
+  statement {
+    sid = "TerraformManageInfra"
+    actions = [
+      # ECS
+      "ecs:*",
+      # IAM (limitado a roles/policies con prefijo rea-)
+      "iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:ListRoles",
+      "iam:AttachRolePolicy", "iam:DetachRolePolicy",
+      "iam:CreatePolicy", "iam:DeletePolicy", "iam:GetPolicy",
+      "iam:GetPolicyVersion", "iam:CreatePolicyVersion", "iam:DeletePolicyVersion",
+      "iam:ListPolicyVersions", "iam:ListAttachedRolePolicies",
+      "iam:PassRole", "iam:TagRole", "iam:UntagRole",
+      "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile",
+      "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
+      "iam:GetInstanceProfile", "iam:ListInstanceProfiles",
+      "iam:GetUser", "iam:CreateUser",
+      "iam:AttachUserPolicy", "iam:DetachUserPolicy",
+      "iam:ListAttachedUserPolicies",
+      # CloudWatch Logs
+      "logs:CreateLogGroup", "logs:DeleteLogGroup",
+      "logs:DescribeLogGroups", "logs:PutRetentionPolicy",
+      "logs:TagLogGroup", "logs:ListTagsLogGroup",
+      # EC2 / VPC (Security Groups)
+      "ec2:CreateSecurityGroup", "ec2:DeleteSecurityGroup",
+      "ec2:DescribeSecurityGroups", "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupEgress", "ec2:DescribeVpcs",
+      "ec2:DescribeSubnets", "ec2:CreateTags", "ec2:DescribeTags",
+      # Service Discovery (Cloud Map)
+      "servicediscovery:*",
+      # Application Auto Scaling
+      "application-autoscaling:*",
+    ]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "github_bot_ecr_policy" {

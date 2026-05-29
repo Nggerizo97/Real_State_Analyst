@@ -1,3 +1,23 @@
+# ── Bloque raíz de Terraform ─────────────────────────────────────────────────
+# El backend S3 guarda el estado remoto en el mismo bucket del proyecto.
+# La configuración completa (bucket/key/region) se inyecta desde CI vía
+# -backend-config (ver .github/workflows/terraform.yml).
+terraform {
+  required_version = ">= 1.6"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+
+  # Backend vacío → rellenado por el workflow con -backend-config flags
+  # Bucket : bronce-scrap-date
+  # Key    : terraform-state/rea.tfstate
+  backend "s3" {}
+}
+
 provider "aws" {
   region = var.aws_region
 }

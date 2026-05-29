@@ -1,0 +1,186 @@
+# .github/workflows/terraform.yml
+#
+# Orquesta la infraestructura ECS (y todo el stack Terraform) desde el pipeline.
+#
+# ── Cuándo se ejecuta ─────────────────────────────────────────────────────────
+#   • Pull Request a main  → solo `terraform plan` (revisión antes de fusionar)
+#   • Push a main          → `plan` + `apply` automático (GitOps)
+#   • Disparador manual    → `plan` + `apply` siempre (útil para el primer deploy)
+#
+# ── Secrets requeridos (Settings → Secrets → Actions) ────────────────────────
+#   AWS_ACCESS_KEY_ID         → clave del bot IAM (github-scraper-bot)
+#   AWS_SECRET_ACCESS_KEY     → clave secreta del bot
+#   TF_VAR_DATABRICKS_WS_ID   → Databricks workspace ID (sensible)
+#   TF_VAR_STREAMLIT_SECRETS  → ARN del secreto en Secrets Manager (puede ser "")
+#
+# ── Variables requeridas (Settings → Variables → Actions) ────────────────────
+#   AWS_REGION                → ej. us-east-1
+#   AWS_ACCOUNT_ID            → número de cuenta de 12 dígitos
+#   TF_VAR_VPC_ID             → ej. vpc-0abc12345
+#   TF_VAR_SUBNET_IDS         → JSON array: ["subnet-0aaa","subnet-0bbb"]
+#   TF_STATE_BUCKET           → nombre del bucket para el estado (bronce-scrap-date)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Terraform — ECS Infrastructure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infrastructure/**"          # solo si cambian archivos .tf
+  pull_request:
+    branches: [main]
+    paths:
+      - "infrastructure/**"
+  workflow_dispatch:                 # lanzar manualmente desde la UI de GitHub
+
+permissions:
+  contents: read
+  pull-requests: write               # para comentar el plan en PRs
+
+env:
+  TF_VERSION: "1.8.5"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  # Variables que Terraform lee como var.xxx
+  TF_VAR_aws_region:              ${{ vars.AWS_REGION }}
+  TF_VAR_s3_bucket_name:          ${{ vars.TF_STATE_BUCKET }}
+  TF_VAR_vpc_id:                  ${{ vars.TF_VAR_VPC_ID }}
+  TF_VAR_public_subnet_ids:       ${{ vars.TF_VAR_SUBNET_IDS }}
+  TF_VAR_databricks_workspace_id: ${{ secrets.TF_VAR_DATABRICKS_WS_ID }}
+  TF_VAR_streamlit_secrets_arn:   ${{ secrets.TF_VAR_STREAMLIT_SECRETS }}
+
+jobs:
+  terraform:
+    name: "${{ github.event_name == 'pull_request' && 'Plan' || 'Plan & Apply' }}"
+    runs-on: ubuntu-latest
+
+    # Cambia el directorio de trabajo a infrastructure/ para todos los pasos
+    defaults:
+      run:
+        working-directory: infrastructure
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Credenciales AWS ──────────────────────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      # ── 3. Instalar Terraform ────────────────────────────────────────────────
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # ── 4. terraform init (con backend S3 remoto) ────────────────────────────
+      # El estado se guarda en s3://TF_STATE_BUCKET/terraform-state/rea.tfstate
+      # Si el bucket no tiene versionado activo, actívalo en S3 → Buckets →
+      # Propiedades → Versioning enabled (permite hacer rollback del estado).
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=terraform-state/rea.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true"
+
+      # ── 5. Validar sintaxis ──────────────────────────────────────────────────
+      - name: Terraform Validate
+        run: terraform validate -no-color
+
+      # ── 6. Plan ──────────────────────────────────────────────────────────────
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -no-color \
+            -out=tfplan \
+            2>&1 | tee plan_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true   # el paso siguiente decide si fallar
+
+      # ── 7. Comentar el plan en Pull Requests ─────────────────────────────────
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infrastructure/plan_output.txt', 'utf8');
+            const maxLen = 60000;
+            const truncated = plan.length > maxLen
+              ? plan.slice(0, maxLen) + '\n\n... (truncado, ver logs completos en Actions)'
+              : plan;
+
+            const body = `## Terraform Plan 📋
+
+            <details><summary>Ver cambios propuestos</summary>
+
+            \`\`\`hcl
+            ${truncated}
+            \`\`\`
+            </details>
+
+            > Commit: \`${{ github.sha }}\` | Workflow: [Ver logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`;
+
+            // Buscar comentario anterior para actualizarlo en lugar de crear uno nuevo
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.login === 'github-actions[bot]' && c.body.includes('Terraform Plan')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      # Fallar si el plan tuvo un error real (no solo "changes to apply")
+      - name: Check plan result
+        if: steps.plan.outputs.exit_code == '1'
+        run: |
+          echo "❌ terraform plan falló. Revisa los errores arriba."
+          exit 1
+
+      # ── 8. Apply (solo en push a main o dispatch manual) ─────────────────────
+      - name: Terraform Apply
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          github.event_name == 'workflow_dispatch'
+        run: |
+          terraform apply \
+            -auto-approve \
+            -no-color \
+            tfplan
+
+      # ── 9. Resumen de outputs ─────────────────────────────────────────────────
+      - name: Show Terraform outputs
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          github.event_name == 'workflow_dispatch'
+        run: |
+          echo "## Outputs de Terraform 🚀" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          terraform output >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

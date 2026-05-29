@@ -1,21 +1,39 @@
 # docker-compose.yml
 # Levanta la API FastAPI + el frontend Streamlit en contenedores separados.
 #
-# Prerequisito: crear un archivo .env en la raíz con:
-#   AWS_ACCESS_KEY_ID=...
-#   AWS_SECRET_ACCESS_KEY=...
-#   AWS_REGION=us-east-1
-#   S3_BUCKET=bronce-scrap-date
+# ─── Desarrollo local ─────────────────────────────────────────────────────────
+#   docker-compose up --build
+#
+# ─── Producción (ECR) ────────────────────────────────────────────────────────
+#   Definir en .env (o en el shell del servidor):
+#     ECR_REGISTRY=<account>.dkr.ecr.<region>.amazonaws.com
+#     IMAGE_TAG=<short-sha>          # o "latest"
+#   Luego:
+#     aws ecr get-login-password | docker login --username AWS --password-stdin $ECR_REGISTRY
+#     docker-compose pull && docker-compose up -d
+#
+# ─── Variables de entorno requeridas en .env ─────────────────────────────────
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET
+#   ECR_REGISTRY   (sólo producción)
+#   IMAGE_TAG      (opcional; default: latest)
 
 version: "3.9"
+
+x-ecr-api: &ecr-api
+  # En producción IMAGE_TAG=<sha> y ECR_REGISTRY=<account>.dkr.ecr.<region>.amazonaws.com
+  # En local la línea 'image:' es ignorada porque 'build:' tiene precedencia al hacer --build
+  image: ${ECR_REGISTRY:-local}/rea-api:${IMAGE_TAG:-latest}
+
+x-ecr-streamlit: &ecr-streamlit
+  image: ${ECR_REGISTRY:-local}/rea-streamlit:${IMAGE_TAG:-latest}
 
 services:
   # ─── Backend API ────────────────────────────────────────────────────────────
   api:
+    <<: *ecr-api
     build:
       context: .
       dockerfile: api/Dockerfile
-    image: rea-api:latest
     container_name: rea_api
     ports:
       - "8000:8000"
@@ -33,10 +51,10 @@ services:
 
   # ─── Frontend Streamlit ─────────────────────────────────────────────────────
   streamlit:
+    <<: *ecr-streamlit
     build:
       context: .
-      dockerfile: Dockerfile   # Dockerfile existente del proyecto
-    image: rea-streamlit:latest
+      dockerfile: Dockerfile
     container_name: rea_streamlit
     ports:
       - "8501:8501"

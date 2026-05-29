@@ -1,0 +1,130 @@
+# .github/workflows/build-push-ecr.yml
+#
+# Construye las imágenes Docker (API FastAPI + Streamlit) y las sube a Amazon ECR.
+# Se ejecuta en cada push a `main` y también puede lanzarse manualmente.
+#
+# ─── Secrets requeridos en GitHub (Settings → Secrets → Actions) ──────────────
+#   AWS_ACCESS_KEY_ID       → clave de acceso del usuario IAM de CI
+#   AWS_SECRET_ACCESS_KEY   → clave secreta del usuario IAM de CI
+#   AWS_ACCOUNT_ID          → número de cuenta AWS (12 dígitos)
+#
+# ─── Variables requeridas en GitHub (Settings → Variables → Actions) ──────────
+#   AWS_REGION              → región ECR, ej. us-east-1
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Build & Push to ECR
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:    # permite lanzar manualmente desde la UI de GitHub
+
+env:
+  AWS_REGION:          ${{ vars.AWS_REGION }}
+  ECR_REPO_API:        rea-api
+  ECR_REPO_STREAMLIT:  rea-streamlit
+
+jobs:
+  build-and-push:
+    name: Build images → ECR
+    runs-on: ubuntu-latest
+    # Permisos mínimos necesarios (sin OIDC, sólo con access keys)
+    permissions:
+      contents: read
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Credenciales AWS ─────────────────────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      # ── 3. Login a ECR ──────────────────────────────────────────────────────
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── 4. Crear repos ECR si no existen ────────────────────────────────────
+      - name: Ensure ECR repositories exist
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          for REPO in $ECR_REPO_API $ECR_REPO_STREAMLIT; do
+            aws ecr describe-repositories \
+              --repository-names "$REPO" \
+              --region "$AWS_REGION" 2>/dev/null \
+            || aws ecr create-repository \
+              --repository-name "$REPO" \
+              --region "$AWS_REGION" \
+              --image-scanning-configuration scanOnPush=true \
+              --image-tag-mutability MUTABLE
+            echo "✓ Repositorio ECR listo: $REPO"
+          done
+
+      # ── 5. Metadatos de la imagen (tag = short SHA + latest) ────────────────
+      - name: Set image tag
+        id: vars
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "registry=${{ steps.ecr-login.outputs.registry }}" >> "$GITHUB_OUTPUT"
+
+      # ── 6. Build & Push — API (FastAPI + DuckDB) ────────────────────────────
+      - name: Build and push API image
+        env:
+          REGISTRY: ${{ steps.vars.outputs.registry }}
+          TAG:      ${{ steps.vars.outputs.short_sha }}
+        run: |
+          IMAGE_URI="${REGISTRY}/${ECR_REPO_API}"
+
+          echo "→ Building API image..."
+          docker build \
+            -f api/Dockerfile \
+            -t "${IMAGE_URI}:${TAG}" \
+            -t "${IMAGE_URI}:latest" \
+            .
+
+          echo "→ Pushing API image..."
+          docker push "${IMAGE_URI}:${TAG}"
+          docker push "${IMAGE_URI}:latest"
+          echo "✓ API: ${IMAGE_URI}:${TAG}"
+
+      # ── 7. Build & Push — Streamlit ─────────────────────────────────────────
+      - name: Build and push Streamlit image
+        env:
+          REGISTRY: ${{ steps.vars.outputs.registry }}
+          TAG:      ${{ steps.vars.outputs.short_sha }}
+        run: |
+          IMAGE_URI="${REGISTRY}/${ECR_REPO_STREAMLIT}"
+
+          echo "→ Building Streamlit image..."
+          docker build \
+            -f Dockerfile \
+            -t "${IMAGE_URI}:${TAG}" \
+            -t "${IMAGE_URI}:latest" \
+            .
+
+          echo "→ Pushing Streamlit image..."
+          docker push "${IMAGE_URI}:${TAG}"
+          docker push "${IMAGE_URI}:latest"
+          echo "✓ Streamlit: ${IMAGE_URI}:${TAG}"
+
+      # ── 8. Resumen de salida ─────────────────────────────────────────────────
+      - name: Summary
+        env:
+          REGISTRY: ${{ steps.vars.outputs.registry }}
+          TAG:      ${{ steps.vars.outputs.short_sha }}
+        run: |
+          echo "## Imágenes publicadas en ECR 🚀" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Servicio | URI |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| API       | \`${REGISTRY}/${ECR_REPO_API}:${TAG}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Streamlit | \`${REGISTRY}/${ECR_REPO_STREAMLIT}:${TAG}\` |" >> "$GITHUB_STEP_SUMMARY"

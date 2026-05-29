@@ -40,13 +40,15 @@ permissions:
 
 env:
   TF_VERSION: "1.8.5"
-  # vars.AWS_REGION debe estar configurado en Settings → Variables → Actions
-  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  # Acepta tanto Variables (vars.*) como Secrets (secrets.*) para mayor flexibilidad.
+  # Si ninguno está configurado el workflow fallará en el step de validación.
+  AWS_REGION:      ${{ vars.AWS_REGION      || secrets.AWS_REGION      || 'us-east-1' }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || secrets.TF_STATE_BUCKET }}
   # Variables que Terraform lee como var.xxx
-  TF_VAR_aws_region:              ${{ vars.AWS_REGION || 'us-east-1' }}
-  TF_VAR_s3_bucket_name:          ${{ secrets.TF_STATE_BUCKET }}
-  TF_VAR_vpc_id:                  ${{ secrets.TF_VAR_VPC_ID }}
-  TF_VAR_public_subnet_ids:       ${{ secrets.TF_VAR_SUBNET_IDS }}
+  TF_VAR_aws_region:              ${{ vars.AWS_REGION      || secrets.AWS_REGION      || 'us-east-1' }}
+  TF_VAR_s3_bucket_name:          ${{ vars.TF_STATE_BUCKET || secrets.TF_STATE_BUCKET }}
+  TF_VAR_vpc_id:                  ${{ vars.TF_VAR_VPC_ID      || secrets.TF_VAR_VPC_ID }}
+  TF_VAR_public_subnet_ids:       ${{ vars.TF_VAR_SUBNET_IDS  || secrets.TF_VAR_SUBNET_IDS }}
   TF_VAR_databricks_workspace_id: ${{ secrets.TF_VAR_DATABRICKS_WS_ID }}
   TF_VAR_streamlit_secrets_arn:   ${{ secrets.TF_VAR_STREAMLIT_SECRETS }}
 
@@ -61,6 +63,22 @@ jobs:
         working-directory: infrastructure
 
     steps:
+      # ── 0. Validar que los valores requeridos están presentes ─────────────────
+      - name: Validate required configuration
+        run: |
+          missing=()
+          [[ -z "${TF_STATE_BUCKET}" ]] && missing+=("TF_STATE_BUCKET")
+          [[ -z "${TF_VAR_vpc_id}" ]]   && missing+=("TF_VAR_VPC_ID")
+          [[ -z "${TF_VAR_public_subnet_ids}" ]] && missing+=("TF_VAR_SUBNET_IDS")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "❌ Faltan los siguientes secrets/variables en GitHub Actions:"
+            for v in "${missing[@]}"; do echo "   • $v"; done
+            echo ""
+            echo "Ve a: Repositorio → Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          echo "✅ Configuración validada"
+
       # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -86,9 +104,9 @@ jobs:
       - name: Terraform Init
         run: |
           terraform init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
             -backend-config="key=terraform-state/rea.tfstate" \
-            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="region=${AWS_REGION}" \
             -backend-config="encrypt=true"
 
       # ── 5. Validar sintaxis ──────────────────────────────────────────────────

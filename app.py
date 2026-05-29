@@ -618,6 +618,9 @@ manifest = load_manifest()
 gold_analitica = load_mercado_analitica()
 gold_sectorial = load_mercado_sectorial()
 gold_portales  = load_portal_operacion()
+if gold_portales is not None and not gold_portales.empty and "gold_snapshot_at" in gold_portales.columns:
+    latest_snapshot = gold_portales["gold_snapshot_at"].max()
+    gold_portales = gold_portales[gold_portales["gold_snapshot_at"] == latest_snapshot]
 
 curr, peak = tracemalloc.get_traced_memory()
 print(f"[REABOOT] MEMORY AFTER ALL Caches: Current {curr/1e6:.1f}MB, Peak {peak/1e6:.1f}MB", flush=True)

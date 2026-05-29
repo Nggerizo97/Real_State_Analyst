@@ -65,6 +65,8 @@ jobs:
     steps:
       # ── 0. Validar que los valores requeridos están presentes ─────────────────
       - name: Validate required configuration
+        working-directory: ${{ github.workspace }}   # infrastructure/ aún no existe
+        shell: bash
         run: |
           missing=()
           [[ -z "${TF_STATE_BUCKET}" ]] && missing+=("TF_STATE_BUCKET")

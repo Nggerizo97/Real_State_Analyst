@@ -18,6 +18,7 @@ import warnings
 import time
 import tracemalloc
 import s3fs
+import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.compute as pc
 
@@ -209,16 +210,6 @@ MANIFEST_KEY = "models/manifest.json"
 
 
 
-@st.cache_resource(show_spinner=False)
-def get_s3():
-    return boto3.client(
-        "s3",
-        aws_access_key_id=st.secrets["aws"]["aws_access_key_id"],
-        aws_secret_access_key=st.secrets["aws"]["aws_secret_access_key"],
-        region_name=st.secrets["aws"].get("aws_region", "us-east-1"),
-    )
-
-
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_manifest():
     """Carga solo el manifest (JSON) de S3."""
@@ -396,7 +387,10 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
         cols_to_load = [c for c in ui_cols if c in all_cols]
         
         # 1. Filtros Pushdown en PyArrow (C++ level)
-        filter_expr = (pc.field("precio_num") >= price_min) & (pc.field("precio_num") <= price_max)
+        # Cast a float64 para evitar el error de overflow en columnas float32:
+        # PyArrow rechaza enteros > 2^24 al compararlos con campos float32.
+        precio_field = pc.cast(pc.field("precio_num"), pa.float64())
+        filter_expr = (precio_field >= float(price_min)) & (precio_field <= float(price_max))
         if cities:
             # Normalizar nombres de ciudades seleccionadas a minúsculas
             cities_lower = [str(c).lower().strip() for c in cities]
@@ -998,14 +992,24 @@ with tab1:
             only_multiportal = st.checkbox("Solo multiportal", value=False,
                                             help="Mostrar solo inmuebles en 2+ portales")
 
-        p_max_slider = float(min(monto_max * 1.3, df["precio_num"].quantile(0.97))) if df is not None else float(monto_max * 1.3)
-        precio_rango = st.slider(
-            "Rango de precio (COP)",
-            min_value=50_000_000.0,
-            max_value=p_max_slider,
-            value=(50_000_000.0, float(monto_max)),
-            step=5_000_000.0,
-            format="$%.0f",
+        _M = 1_000_000.0
+        p_max_slider_m = (
+            float(min(monto_max * 1.3, df["precio_num"].quantile(0.97))) / _M
+            if df is not None
+            else float(monto_max * 1.3) / _M
+        )
+        _val_max_m = min(float(monto_max) / _M, p_max_slider_m)
+        precio_rango_m = st.slider(
+            "Rango de precio",
+            min_value=50.0,
+            max_value=p_max_slider_m,
+            value=(50.0, _val_max_m),
+            step=5.0,
+            format="$%.0f M",
+        )
+        precio_rango = (precio_rango_m[0] * _M, precio_rango_m[1] * _M)
+        st.caption(
+            f"Rango seleccionado: **{fmt_cop(precio_rango[0])}** — **{fmt_cop(precio_rango[1])} COP**"
         )
         
         # Botón de Búsqueda Dinámica
@@ -1410,10 +1414,10 @@ with tab3:
     st.markdown('<div class="section-label">Segmentación del mercado</div>', unsafe_allow_html=True)
     v1, v2 = st.columns(2)
     with v1:
-        df["segmento"] = df["precio_num"].apply(
+        _segmento = df["precio_num"].apply(
             lambda x: "VIS (≤$250M)" if x <= 250_000_000 else "No VIS (>$250M)"
         )
-        seg_cnt = df["segmento"].value_counts()
+        seg_cnt = _segmento.value_counts()
         fig_vis = go.Figure(go.Pie(
             labels=seg_cnt.index, values=seg_cnt.values, hole=0.5,
             marker=dict(colors=["#1a6b4a", "#1a4a8b"], line=dict(color="white", width=2)),

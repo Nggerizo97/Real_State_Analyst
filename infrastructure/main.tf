@@ -28,13 +28,17 @@ data "aws_s3_bucket" "bronze_bucket" {
 }
 
 # Assume Role Policy for Databricks to assume this IAM Role
+# NOTA: Solo se crea si var.databricks_workspace_id no es vacio.
+# El account ID 414360369270 es el account ID de Databricks en AWS commercial.
+# Si tu workspace usa un account ID diferente, actualiza la variable
+# databricks_account_id en variables.tf.
 data "aws_iam_policy_document" "databricks_assume_role" {
+  count = var.databricks_workspace_id != "" ? 1 : 0
   statement {
     actions = ["sts:AssumeRole"]
     principals {
       type        = "AWS"
-      # IMPORTANT: Replace this ARN with the specific AWS Account ID used by your Databricks deployment
-      identifiers = ["arn:aws:iam::414360369270:role/databricks-cross-account-role"] 
+      identifiers = ["arn:aws:iam::414360369270:role/databricks-cross-account-role"]
     }
     condition {
       test     = "StringEquals"
@@ -46,8 +50,9 @@ data "aws_iam_policy_document" "databricks_assume_role" {
 
 # Creates the IAM Role for Databricks S3 access
 resource "aws_iam_role" "databricks_s3_access_role" {
+  count              = var.databricks_workspace_id != "" ? 1 : 0
   name               = "databricks-bronze-s3-access-role"
-  assume_role_policy = data.aws_iam_policy_document.databricks_assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.databricks_assume_role[0].json
 }
 
 # Least Privilege Policy: Access only to the specific S3 Bronze bucket
@@ -78,26 +83,29 @@ data "aws_iam_policy_document" "databricks_s3_policy_doc" {
 }
 
 resource "aws_iam_policy" "databricks_s3_policy" {
+  count       = var.databricks_workspace_id != "" ? 1 : 0
   name        = "databricks-s3-least-privilege"
   description = "Allows Databricks workspace restricted access to the specific Bronze S3 bucket"
   policy      = data.aws_iam_policy_document.databricks_s3_policy_doc.json
 }
 
 resource "aws_iam_role_policy_attachment" "databricks_policy_attach" {
-  role       = aws_iam_role.databricks_s3_access_role.name
-  policy_arn = aws_iam_policy.databricks_s3_policy.arn
+  count      = var.databricks_workspace_id != "" ? 1 : 0
+  role       = aws_iam_role.databricks_s3_access_role[0].name
+  policy_arn = aws_iam_policy.databricks_s3_policy[0].arn
 }
 
 resource "aws_iam_instance_profile" "databricks_instance_profile" {
-  name = "databricks-bronze-instance-profile"
-  role = aws_iam_role.databricks_s3_access_role.name
+  count = var.databricks_workspace_id != "" ? 1 : 0
+  name  = "databricks-bronze-instance-profile"
+  role  = aws_iam_role.databricks_s3_access_role[0].name
 }
 
 output "instance_profile_arn" {
   description = "Use this Instance Profile ARN inside your Databricks Cluster configuration"
-  value       = aws_iam_instance_profile.databricks_instance_profile.arn
+  value       = var.databricks_workspace_id != "" ? aws_iam_instance_profile.databricks_instance_profile[0].arn : "(databricks_workspace_id not set - skipped)"
 }
 output "iam_role_arn" {
   description = "IAM Role ARN for Databricks to assume"
-  value       = aws_iam_role.databricks_s3_access_role.arn
+  value       = var.databricks_workspace_id != "" ? aws_iam_role.databricks_s3_access_role[0].arn : "(databricks_workspace_id not set - skipped)"
 }

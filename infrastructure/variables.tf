@@ -11,8 +11,9 @@ variable "s3_bucket_name" {
 }
 
 variable "databricks_workspace_id" {
-  description = "The Workspace ID of your Databricks account"
+  description = "Numeric Workspace ID of your Databricks deployment (used as sts:ExternalId). Leave empty to skip Databricks IAM resources."
   type        = string
+  default     = ""
 }
 
 # ── ECS / Networking ─────────────────────────────────────────────────────────

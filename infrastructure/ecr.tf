@@ -2,12 +2,19 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Amazon ECR — Repositorios de imágenes Docker
 # ─────────────────────────────────────────────────────────────────────────────
-# Crea:
-#   • rea-api        → imagen del backend FastAPI
-#   • rea-streamlit  → imagen del frontend Streamlit
-#   • Usuario IAM ci-ecr-push con permisos mínimos para que GitHub Actions pueda
-#     hacer push sin credenciales de administrador.
-# ─────────────────────────────────────────────────────────────────────────────
+# Los repos ya existen en ECR (creados por el workflow build-push-ecr.yml).
+# Los bloques import los adoptan en el estado de Terraform sin recrearlos.
+# ───────────────────────────────────────────────────────────────────────────
+
+import {
+  to = aws_ecr_repository.rea_api
+  id = "rea-api"
+}
+
+import {
+  to = aws_ecr_repository.rea_streamlit
+  id = "rea-streamlit"
+}
 
 # ── Repositorios ECR ─────────────────────────────────────────────────────────
 

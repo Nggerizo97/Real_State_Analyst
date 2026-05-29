@@ -18,12 +18,6 @@
 # horario de uso (ej. 22:00-07:00) → hasta -40% del costo mensual.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Data sources de red ───────────────────────────────────────────────────────
-
-data "aws_vpc" "main" {
-  id = var.vpc_id
-}
-
 # ── CloudWatch Log Groups (retención 7 días = mínimo costo) ──────────────────
 
 resource "aws_cloudwatch_log_group" "rea_api" {

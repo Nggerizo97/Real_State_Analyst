@@ -75,10 +75,10 @@ resource "aws_ecr_lifecycle_policy" "rea_streamlit_lifecycle" {
 }
 
 # ── Política ECR para el usuario IAM existente de GitHub Actions ─────────────
-# Referencia al usuario existente (github-scraper-bot) sin modificar su creación.
+# Se usa el nombre directamente para evitar requerir iam:GetUser en el bot.
 
-data "aws_iam_user" "github_bot" {
-  user_name = "github-scraper-bot"
+locals {
+  github_bot_username = "github-scraper-bot"
 }
 
 data "aws_iam_policy_document" "github_bot_ecr_policy_doc" {
@@ -183,7 +183,7 @@ resource "aws_iam_policy" "github_bot_ecr_policy" {
 }
 
 resource "aws_iam_user_policy_attachment" "github_bot_ecr_attach" {
-  user       = data.aws_iam_user.github_bot.user_name
+  user       = local.github_bot_username
   policy_arn = aws_iam_policy.github_bot_ecr_policy.arn
 }
 

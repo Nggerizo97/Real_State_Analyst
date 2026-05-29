@@ -387,10 +387,12 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
         cols_to_load = [c for c in ui_cols if c in all_cols]
         
         # 1. Filtros Pushdown en PyArrow (C++ level)
-        # Cast a float64 para evitar el error de overflow en columnas float32:
-        # PyArrow rechaza enteros > 2^24 al compararlos con campos float32.
-        precio_field = pc.cast(pc.field("precio_num"), pa.float64())
-        filter_expr = (precio_field >= float(price_min)) & (precio_field <= float(price_max))
+        # Usar pa.scalar(float64) para evitar el error de rango en columnas float32:
+        # PyArrow rechaza enteros > 2^24 al inferirlos como int→float32.
+        # pc.cast en expresiones de campo no es soportado por el API de dataset filter.
+        _pm = pa.scalar(float(price_min), type=pa.float64())
+        _pM = pa.scalar(float(price_max), type=pa.float64())
+        filter_expr = (pc.field("precio_num") >= _pm) & (pc.field("precio_num") <= _pM)
         if cities:
             # Normalizar nombres de ciudades seleccionadas a minúsculas
             cities_lower = [str(c).lower().strip() for c in cities]

@@ -322,14 +322,16 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
         dataset = ds.dataset(s3_path, filesystem=fs, format="parquet")
         all_cols = dataset.schema.names
         
-        ui_cols = [
-            "id_original", "id_inmueble", "city_token", "market_token", "ubicacion_norm", "ubicacion_raw", "ubicacion_clean",
-            "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
-            "fuente", "url", "titulo", "rentabilidad_potencial", "estado_inversion", "comuna_mercado", "sector_mercado",
-            "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2"
-        ]
-        
-        cols_to_load = [c for c in ui_cols if c in all_cols]
+        if "app_inmuebles" in table_name:
+            ui_cols = [
+                "id_original", "id_inmueble", "city_token", "market_token", "ubicacion_norm", "ubicacion_raw", "ubicacion_clean",
+                "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
+                "fuente", "url", "titulo", "rentabilidad_potencial", "estado_inversion", "comuna_mercado", "sector_mercado",
+                "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2"
+            ]
+            cols_to_load = [c for c in ui_cols if c in all_cols]
+        else:
+            cols_to_load = all_cols
         print(f"[REABOOT] Extrayendo {len(cols_to_load)} de {len(all_cols)} columnas...", flush=True)
         
         table = dataset.to_table(columns=cols_to_load)

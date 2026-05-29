@@ -82,6 +82,12 @@ def dark_layout(fig, height=380, **extra):
     fig.update_layout(**layout_params)
     return fig
 
+def fmt_cop(val):
+    """Formatea un número de forma elegante como COP con separador de puntos."""
+    if pd.isna(val) or val is None:
+        return "—"
+    return f"${int(val):,}".replace(",", ".")
+
 # ══════════════════════════════════════════════════════════════════
 # CLIENTES Y CARGA (S3, Bedrock, Ollama)
 # ══════════════════════════════════════════════════════════════════
@@ -299,10 +305,11 @@ def _s3_storage_options():
     }
 
 def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
-    """Lee una tabla Gold desde S3 optimizando RAM mediante poda de columnas e instancias duplicadas."""
+    """Lee una tabla Gold desde S3 optimizando RAM mediante poda de columnas, downcasting y categorización extrema."""
+    import gc
     try:
         bucket = st.secrets["aws"]["s3_bucket_name"]
-        print(f"[REABOOT] Iniciando descarga S3: {table_name}", flush=True)
+        print(f"[REABOOT] Iniciando descarga S3 optimizada: {table_name}", flush=True)
         t0 = time.time()
         
         fs = s3fs.S3FileSystem(
@@ -327,6 +334,20 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
         table = dataset.to_table(columns=cols_to_load)
         df = table.to_pandas()
         
+        # --- OPTIMIZACIONES DE MEMORIA EN EL DATAFRAME ---
+        # 1. Categorización de strings repetitivos de alta cardinalidad/baja cardinalidad repetitiva
+        categorical_cols = ["city_token", "market_token", "tipo_inmueble", "estado_inmueble", "fuente", "estado_inversion", "comuna_mercado"]
+        for col in categorical_cols:
+            if col in df.columns:
+                df[col] = df[col].astype("category")
+                
+        # 2. Downcasting de variables numéricas a 32 bits
+        float32_cols = ["precio_num", "area_m2", "habitaciones", "banos", "garajes", "num_portales", "precio_m2",
+                        "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "rentabilidad_potencial"]
+        for col in float32_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
+        
         # Supervivencia estricta para matar duplicados del Lakehouse
         if "id_original" in df.columns:
             df = df.drop_duplicates(subset=["id_original"], keep="last")
@@ -334,6 +355,11 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
             df = df.drop_duplicates(subset=["id_inmueble"], keep="last")
             
         print(f"[REABOOT] EXITO S3: {table_name} descargado en {time.time()-t0:.2f}s. Shape RAM final: {df.shape}", flush=True)
+        
+        # Liberar explícitamente recursos pesados de PyArrow de la memoria
+        del table
+        gc.collect()
+        
         return df
     except Exception as e:
         print(f"[REABOOT] ERROR S3 {table_name}: {e}", flush=True)
@@ -458,6 +484,21 @@ def _clean_gold(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["comuna_mercado", "sector_mercado"]:
         if col not in df.columns:
             df[col] = np.nan
+
+    # --- RE-APLICAR OPTIMIZACIONES DE MEMORIA Y TIPOS DE DATOS ---
+    categorical_cols = ["city_token", "market_token", "tipo_inmueble", "estado_inmueble", "fuente", "estado_inversion", "comuna_mercado", "sector_mercado"]
+    for col in categorical_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna("desconocido").astype("category")
+            
+    float32_cols = ["precio_num", "area_m2", "habitaciones", "banos", "garajes", "num_portales", "precio_m2",
+                    "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "rentabilidad_potencial"]
+    for col in float32_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
+
+    import gc
+    gc.collect()
 
     return df.reset_index(drop=True)
 
@@ -809,7 +850,7 @@ with tab1:
         viable = cuota <= capacidad
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Cuota mensual estimada", f"${cuota:,.0f}")
+        m1.metric("Cuota mensual estimada", fmt_cop(cuota))
         m2.metric("Presupuesto máx (70%)", f"${monto_max/1e6:.0f}M")
         m3.metric("Interés total (20 años)", f"${(cuota*plazo - prestamo)/1e6:.0f}M")
         m4.metric("Viabilidad", "✓ Viable" if viable else "✗ Excede capacidad")
@@ -818,8 +859,8 @@ with tab1:
             deficit = cuota - capacidad
             st.warning(
                 f"💡 **Recomendación financiera:** La cuota estimada supera tu capacidad en "
-                f"**${deficit:,.0f} COP/mes**. Considera: (1) reducir el monto del préstamo a "
-                f"${prestamo * (capacidad/cuota)/1e6:.0f}M, (2) ampliar el plazo a 25-30 años, "
+                f"**{fmt_cop(deficit)}/mes**. Considera: (1) reducir el monto del préstamo a "
+                f"{fmt_cop(prestamo * (capacidad/cuota))}, (2) ampliar el plazo a 25-30 años, "
                 f"o (3) aumentar el ahorro inicial para bajar el capital financiado."
             )
 
@@ -953,8 +994,8 @@ with tab1:
                     df_show[col] = df_show[col].str.replace("_", " ").str.title()
 
             fmt = {}
-            if "Precio" in df_show.columns:       fmt["Precio"]        = "${:,.0f}"
-            if "Precio modelo" in df_show.columns: fmt["Precio modelo"] = "${:,.0f}"
+            if "Precio" in df_show.columns:       fmt["Precio"]        = lambda x: f"${int(x):,}".replace(",", ".")
+            if "Precio modelo" in df_show.columns: fmt["Precio modelo"] = lambda x: f"${int(x):,}".replace(",", ".")
             if "Señal %" in df_show.columns:       fmt["Señal %"]       = "{:+.1f}%"
             if "m²" in df_show.columns:            fmt["m²"]            = "{:.0f}"
             if "Portales" in df_show.columns:      fmt["Portales"]      = "{:.0f}"
@@ -1234,7 +1275,7 @@ with tab2:
                 "ubicacion_clean": "Zona", "precio_num": "Precio", "area_m2": "m²",
                 "rentabilidad_potencial": "Señal %", "estado_inversion": "Señal",
                 "num_portales": "Portales",
-            }).style.format({"Precio": "${:,.0f}", "m²": "{:.0f}", "Señal %": "{:+.1f}%"}),
+            }).style.format({"Precio": lambda x: f"${int(x):,}".replace(",", "."), "m²": "{:.0f}", "Señal %": "{:+.1f}%"}),
             width="stretch", hide_index=True,
         )
 
@@ -1367,8 +1408,10 @@ with tab3:
                 "precio_m2_mediano": "Precio/m² Med.", "lower_bound_ref": "Banda baja",
                 "upper_bound_ref": "Banda alta", "market_quality_score": "Quality",
             }).style.format({
-                "Precio/m² Med.": "${:,.0f}", "Banda baja": "${:,.0f}",
-                "Banda alta": "${:,.0f}", "Quality": "{:.0f}",
+                "Precio/m² Med.": lambda x: f"${int(x):,}".replace(",", "."),
+                "Banda baja": lambda x: f"${int(x):,}".replace(",", "."),
+                "Banda alta": lambda x: f"${int(x):,}".replace(",", "."),
+                "Quality": "{:.0f}",
             }),
             width="stretch", hide_index=True,
         )

@@ -164,21 +164,31 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
             if strategy == "residual" or "Residual" in str(type(pipeline)): # v8 unified fallback
                 precio_pred = precio_pred * r["precio_estimado_segmento_area_ajustado"].fillna(gpm).to_numpy()
 
-        df["precio_predicho"] = precio_pred
+        df["precio_predicho"] = precio_pred.astype("float32")
         df["rentabilidad_potencial"] = (
-            (df["precio_predicho"] - df["precio_num"]) / df["precio_num"].replace(0, np.nan) * 100
-        ).replace([np.inf, -np.inf], 0).fillna(0).round(1)
+            ((df["precio_predicho"] - df["precio_num"]) / df["precio_num"].replace(0, np.nan) * 100)
+            .replace([np.inf, -np.inf], 0).fillna(0).round(1).astype("float32")
+        )
 
         mape_modelo = bundle.get("metrics", {}).get("mape", 20.0)
         signal_threshold = max(12.0, min(25.0, float(mape_modelo) * 0.75))
         df["estado_inversion"] = df["rentabilidad_potencial"].apply(
             lambda x: "Oportunidad" if x > signal_threshold else ("Sobrevalorado" if x < -signal_threshold else "En mercado")
-        )
+        ).astype("category")
+
+        # Liberación explícita de copias y temporales pesados de RAM
+        import gc
+        if 'df_pred' in locals(): del df_pred
+        if 'X' in locals(): del X
+        if 'X_proc' in locals(): del X_proc
+        gc.collect()
 
     except Exception as e:
         traceback.print_exc()
         df["precio_predicho"] = np.nan
         df["estado_inversion"] = f"Error Crítico: {str(e)[:50]}"
+        if "estado_inversion" in df.columns:
+            df["estado_inversion"] = df["estado_inversion"].astype("category")
 
     return df
 

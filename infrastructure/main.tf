@@ -37,8 +37,11 @@ data "aws_iam_policy_document" "databricks_assume_role" {
   statement {
     actions = ["sts:AssumeRole"]
     principals {
-      type        = "AWS"
-      identifiers = ["arn:aws:iam::414360369270:role/databricks-cross-account-role"]
+      type = "AWS"
+      # ":root" es siempre válido como principal; la seguridad recae en el
+      # sts:ExternalId (workspace ID único de Databricks). AWS rechaza ARNs
+      # de roles específicos si ese rol no existe en la cuenta remota.
+      identifiers = ["arn:aws:iam::414360369270:root"]
     }
     condition {
       test     = "StringEquals"

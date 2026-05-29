@@ -396,7 +396,7 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
         cols_to_load = [c for c in ui_cols if c in all_cols]
         
         # 1. Filtros Pushdown en PyArrow (C++ level)
-        filter_expr = pc.field("precio_num").between(price_min, price_max)
+        filter_expr = (pc.field("precio_num") >= price_min) & (pc.field("precio_num") <= price_max)
         if cities:
             # Normalizar nombres de ciudades seleccionadas a minúsculas
             cities_lower = [str(c).lower().strip() for c in cities]

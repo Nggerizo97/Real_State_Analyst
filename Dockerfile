@@ -13,8 +13,9 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Entrypoint: genera secrets.toml desde env vars antes de arrancar Streamlit
-RUN chmod +x /app/docker-entrypoint.sh
+# Entrypoint: normalizar line endings (CRLF→LF) y dar permisos de ejecucion
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh \
+    && chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 8501
 

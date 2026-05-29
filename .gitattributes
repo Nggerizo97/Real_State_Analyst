@@ -1,0 +1,5 @@
+# Forzar LF en scripts bash para que funcionen en contenedores Linux
+*.sh    text eol=lf
+
+# Detectar automáticamente el resto
+*       text=auto

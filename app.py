@@ -61,9 +61,26 @@ if os.path.exists("style.css"):
     with open("style.css") as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-# Validar secretos mínimos antes de arrancar
-if "aws" not in st.secrets:
-    st.error("🔑 **Faltan los Secretos en Streamlit Cloud.** Ve a Settings -> Secrets y pega tu .streamlit/secrets.toml local.")
+def _get_aws_config() -> dict:
+    """Lee config AWS desde st.secrets (Streamlit Cloud / local) o variables de entorno
+    (ECS con IAM Task Role). Nunca lanza excepcion — siempre devuelve un dict."""
+    try:
+        if "aws" in st.secrets:
+            return dict(st.secrets["aws"])
+    except Exception:
+        pass
+    # Fallback: env vars inyectadas por ECS / entrypoint.
+    # Credenciales vacias → boto3/s3fs usan el IAM Task Role automaticamente.
+    return {
+        "aws_access_key_id":     os.getenv("AWS_ACCESS_KEY_ID", ""),
+        "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY", ""),
+        "aws_region":            os.getenv("AWS_REGION", "us-east-1"),
+        "s3_bucket_name":        os.getenv("S3_BUCKET", ""),
+    }
+
+aws_config = _get_aws_config()
+if not aws_config.get("s3_bucket_name"):
+    st.error("Falta configuracion S3. Define la variable de entorno S3_BUCKET o anade [aws] con s3_bucket_name en secrets.toml.")
     st.stop()
 
 # Constantes de color para gráficas — NUNCA usar "white" en paper_bgcolor
@@ -181,32 +198,35 @@ def api_predict(row: dict) -> dict | None:
 def get_s3():
     # Credenciales vacías → None → boto3 usa el IAM Task Role (ECS) o
     # las variables de entorno AWS_* / el perfil local en desarrollo.
-    key    = st.secrets["aws"].get("aws_access_key_id")    or None
-    secret = st.secrets["aws"].get("aws_secret_access_key") or None
+    key    = aws_config.get("aws_access_key_id")    or None
+    secret = aws_config.get("aws_secret_access_key") or None
     return boto3.client(
         "s3",
         aws_access_key_id=key,
         aws_secret_access_key=secret,
-        region_name=st.secrets["aws"].get("aws_region", "us-east-1"),
+        region_name=aws_config.get("aws_region", "us-east-1"),
     )
 
 # 2. Configuración Bedrock (Llama 3.1)
 @st.cache_resource(show_spinner=False)
 def get_bedrock():
     try:
-        key    = st.secrets["aws"].get("aws_access_key_id")    or None
-        secret = st.secrets["aws"].get("aws_secret_access_key") or None
+        key    = aws_config.get("aws_access_key_id")    or None
+        secret = aws_config.get("aws_secret_access_key") or None
         return boto3.client(
             "bedrock-runtime",
             aws_access_key_id=key,
             aws_secret_access_key=secret,
-            region_name=st.secrets["aws"].get("aws_region", "us-east-1"),
+            region_name=aws_config.get("aws_region", "us-east-1"),
         )
     except Exception:
         return None
 
 # 3. Configuración Ollama (Fallback local)
-_llm_cfg = st.secrets.get("llm", {})
+try:
+    _llm_cfg = st.secrets.get("llm", {})
+except Exception:
+    _llm_cfg = {}
 llm_client = OpenAI(
     base_url=_llm_cfg.get("api_base", "http://localhost:11434/v1"),
     api_key=_llm_cfg.get("api_key", "ollama"),
@@ -303,7 +323,7 @@ def load_manifest():
     """Carga solo el manifest (JSON) de S3."""
     try:
         s3 = get_s3()
-        bucket = st.secrets["aws"]["s3_bucket_name"]
+        bucket = aws_config.get("s3_bucket_name", "")
         return json.loads(
             s3.get_object(Bucket=bucket, Key=MANIFEST_KEY)["Body"].read()
         )
@@ -313,7 +333,7 @@ def load_manifest():
 def load_model_bundle(manifest=None):
     """Carga el bundle pesado (.pkl) de S3."""
     s3 = get_s3()
-    bucket = st.secrets["aws"]["s3_bucket_name"]
+    bucket = aws_config.get("s3_bucket_name", "")
     
     if not manifest:
         manifest = load_manifest()
@@ -379,21 +399,21 @@ def load_model_bundle(manifest=None):
 
 
 def _s3_storage_options():
-    key    = st.secrets["aws"].get("aws_access_key_id")    or None
-    secret = st.secrets["aws"].get("aws_secret_access_key") or None
+    key    = aws_config.get("aws_access_key_id")    or None
+    secret = aws_config.get("aws_secret_access_key") or None
     return {"key": key, "secret": secret}
 
 def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
     """Lee una tabla Gold desde S3 optimizando RAM mediante poda de columnas, downcasting y categorización extrema."""
     import gc
     try:
-        bucket = st.secrets["aws"]["s3_bucket_name"]
+        bucket = aws_config.get("s3_bucket_name", "")
         print(f"[REABOOT] Iniciando descarga S3 optimizada: {table_name}", flush=True)
         t0 = time.time()
         
         fs = s3fs.S3FileSystem(
-            key=st.secrets["aws"].get("aws_access_key_id")    or None,
-            secret=st.secrets["aws"].get("aws_secret_access_key") or None
+            key=aws_config.get("aws_access_key_id")    or None,
+            secret=aws_config.get("aws_secret_access_key") or None
         )
         s3_path = f"{bucket}/gold/{table_name}/"
             ui_cols = [
@@ -446,13 +466,13 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
     """Descarga de S3 de forma selectiva y ultrarrápida únicamente los registros de las ciudades y precios seleccionados."""
     import gc
     try:
-        bucket = st.secrets["aws"]["s3_bucket_name"]
+        bucket = aws_config.get("s3_bucket_name", "")
         print(f"[ON-DEMAND] Consultando S3 para ciudades {cities} en rango ${price_min:,.0f} - ${price_max:,.0f}", flush=True)
         t0 = time.time()
         
         fs = s3fs.S3FileSystem(
-            key=st.secrets["aws"].get("aws_access_key_id")    or None,
-            secret=st.secrets["aws"].get("aws_secret_access_key") or None
+            key=aws_config.get("aws_access_key_id")    or None,
+            secret=aws_config.get("aws_secret_access_key") or None
         )
         s3_path = f"{bucket}/gold/{table_name}/"
         

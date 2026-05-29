@@ -178,7 +178,7 @@ data "aws_iam_policy_document" "github_bot_ecr_policy_doc" {
 
 resource "aws_iam_policy" "github_bot_ecr_policy" {
   name        = "github-scraper-bot-ecr-policy"
-  description = "Permisos ECR para github-scraper-bot → GitHub Actions (proyecto RealEstateAnalyst)"
+  description = "ECR + infra permissions for github-scraper-bot (GitHub Actions CI/CD)"
   policy      = data.aws_iam_policy_document.github_bot_ecr_policy_doc.json
 }
 

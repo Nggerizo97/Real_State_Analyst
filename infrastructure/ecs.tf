@@ -132,7 +132,7 @@ data "aws_iam_policy_document" "ecs_task_s3_doc" {
 
 resource "aws_iam_policy" "ecs_task_s3_policy" {
   name        = "rea-ecs-task-s3-read"
-  description = "Acceso de solo lectura al bucket S3 para los contenedores ECS"
+  description = "Acceso de solo lectura al bucket S3 para contenedores ECS"
   policy      = data.aws_iam_policy_document.ecs_task_s3_doc.json
 }
 
@@ -170,7 +170,7 @@ resource "aws_security_group" "rea_streamlit" {
   vpc_id      = var.vpc_id
 
   ingress {
-    description = "UI pública"
+    description = "UI publica"
     from_port   = 8501
     to_port     = 8501
     protocol    = "tcp"
@@ -178,7 +178,7 @@ resource "aws_security_group" "rea_streamlit" {
   }
 
   egress {
-    description = "Todo el tráfico saliente (API interna + S3 + ECR)"
+    description = "Todo el trafico saliente (API interna + S3 + ECR)"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -505,7 +505,7 @@ output "api_service_discovery_dns" {
 }
 
 output "streamlit_task_public_ip_hint" {
-  description = "IP pública de Streamlit (obtener con: aws ecs describe-tasks)"
+  description = "IP publica de Streamlit (obtener con: aws ecs describe-tasks)"
   value       = "aws ecs describe-tasks --cluster ${aws_ecs_cluster.rea.name} --tasks $(aws ecs list-tasks --cluster ${aws_ecs_cluster.rea.name} --service-name rea-streamlit --query 'taskArns[0]' --output text) --query 'tasks[0].attachments[0].details[?name==`publicIPv4Address`].value' --output text"
 }
 

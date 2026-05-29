@@ -63,24 +63,25 @@ if os.path.exists("style.css"):
 
 def _get_aws_config() -> dict:
     """Lee config AWS desde st.secrets (Streamlit Cloud / local) o variables de entorno
-    (ECS con IAM Task Role). Nunca lanza excepcion — siempre devuelve un dict."""
+    (ECS con IAM Task Role). Nunca lanza excepcion — siempre devuelve un dict.
+
+    En ECS el dict de fallback NO incluye credenciales explícitas: boto3 y s3fs
+    detectan automáticamente el metadata endpoint del contenedor y usan el Task Role.
+    """
     try:
         if "aws" in st.secrets:
             return dict(st.secrets["aws"])
     except Exception:
         pass
-    # Fallback: env vars inyectadas por ECS / entrypoint.
-    # Credenciales vacias → boto3/s3fs usan el IAM Task Role automaticamente.
+    # Fallback para ECS: solo region y bucket; las credenciales las provee el IAM Task Role.
     return {
-        "aws_access_key_id":     os.getenv("AWS_ACCESS_KEY_ID", ""),
-        "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY", ""),
-        "aws_region":            os.getenv("AWS_REGION", "us-east-1"),
-        "s3_bucket_name":        os.getenv("S3_BUCKET", ""),
+        "aws_region":    os.getenv("AWS_REGION", "us-east-1"),
+        "s3_bucket_name": os.getenv("S3_BUCKET_NAME", ""),
     }
 
 aws_config = _get_aws_config()
 if not aws_config.get("s3_bucket_name"):
-    st.error("Falta configuracion S3. Define la variable de entorno S3_BUCKET o anade [aws] con s3_bucket_name en secrets.toml.")
+    st.error("Falta el nombre del bucket S3. Define S3_BUCKET_NAME como variable de entorno en ECS o agrega s3_bucket_name en [aws] de secrets.toml.")
     st.stop()
 
 # Constantes de color para gráficas — NUNCA usar "white" en paper_bgcolor

@@ -53,7 +53,7 @@ else
 aws_access_key_id     = "${AWS_ACCESS_KEY_ID:-}"
 aws_secret_access_key = "${AWS_SECRET_ACCESS_KEY:-}"
 aws_region            = "${AWS_REGION:-us-east-1}"
-s3_bucket_name        = "${S3_BUCKET:-}"
+s3_bucket_name        = "${S3_BUCKET_NAME:-}"
 TOML
     echo "secrets.toml written from env vars" >&2
 fi

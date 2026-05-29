@@ -44,9 +44,9 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   # Variables que Terraform lee como var.xxx
   TF_VAR_aws_region:              ${{ vars.AWS_REGION || 'us-east-1' }}
-  TF_VAR_s3_bucket_name:          ${{ vars.TF_STATE_BUCKET }}
-  TF_VAR_vpc_id:                  ${{ vars.TF_VAR_VPC_ID }}
-  TF_VAR_public_subnet_ids:       ${{ vars.TF_VAR_SUBNET_IDS }}
+  TF_VAR_s3_bucket_name:          ${{ secrets.TF_STATE_BUCKET }}
+  TF_VAR_vpc_id:                  ${{ secrets.TF_VAR_VPC_ID }}
+  TF_VAR_public_subnet_ids:       ${{ secrets.TF_VAR_SUBNET_IDS }}
   TF_VAR_databricks_workspace_id: ${{ secrets.TF_VAR_DATABRICKS_WS_ID }}
   TF_VAR_streamlit_secrets_arn:   ${{ secrets.TF_VAR_STREAMLIT_SECRETS }}
 

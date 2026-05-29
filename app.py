@@ -179,10 +179,14 @@ def api_predict(row: dict) -> dict | None:
 # 1. Configuración S3 / AWS
 @st.cache_resource(show_spinner=False)
 def get_s3():
+    # Credenciales vacías → None → boto3 usa el IAM Task Role (ECS) o
+    # las variables de entorno AWS_* / el perfil local en desarrollo.
+    key    = st.secrets["aws"].get("aws_access_key_id")    or None
+    secret = st.secrets["aws"].get("aws_secret_access_key") or None
     return boto3.client(
         "s3",
-        aws_access_key_id=st.secrets["aws"]["aws_access_key_id"],
-        aws_secret_access_key=st.secrets["aws"]["aws_secret_access_key"],
+        aws_access_key_id=key,
+        aws_secret_access_key=secret,
         region_name=st.secrets["aws"].get("aws_region", "us-east-1"),
     )
 
@@ -190,10 +194,12 @@ def get_s3():
 @st.cache_resource(show_spinner=False)
 def get_bedrock():
     try:
+        key    = st.secrets["aws"].get("aws_access_key_id")    or None
+        secret = st.secrets["aws"].get("aws_secret_access_key") or None
         return boto3.client(
             "bedrock-runtime",
-            aws_access_key_id=st.secrets["aws"]["aws_access_key_id"],
-            aws_secret_access_key=st.secrets["aws"]["aws_secret_access_key"],
+            aws_access_key_id=key,
+            aws_secret_access_key=secret,
             region_name=st.secrets["aws"].get("aws_region", "us-east-1"),
         )
     except Exception:
@@ -373,10 +379,9 @@ def load_model_bundle(manifest=None):
 
 
 def _s3_storage_options():
-    return {
-        "key": st.secrets["aws"]["aws_access_key_id"],
-        "secret": st.secrets["aws"]["aws_secret_access_key"],
-    }
+    key    = st.secrets["aws"].get("aws_access_key_id")    or None
+    secret = st.secrets["aws"].get("aws_secret_access_key") or None
+    return {"key": key, "secret": secret}
 
 def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
     """Lee una tabla Gold desde S3 optimizando RAM mediante poda de columnas, downcasting y categorización extrema."""
@@ -387,15 +392,10 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
         t0 = time.time()
         
         fs = s3fs.S3FileSystem(
-            key=st.secrets["aws"]["aws_access_key_id"],
-            secret=st.secrets["aws"]["aws_secret_access_key"]
+            key=st.secrets["aws"].get("aws_access_key_id")    or None,
+            secret=st.secrets["aws"].get("aws_secret_access_key") or None
         )
         s3_path = f"{bucket}/gold/{table_name}/"
-        
-        dataset = ds.dataset(s3_path, filesystem=fs, format="parquet")
-        all_cols = dataset.schema.names
-        
-        if "app_inmuebles" in table_name:
             ui_cols = [
                 "id_original", "id_inmueble", "city_token", "market_token", "ubicacion_norm", "ubicacion_raw", "ubicacion_clean",
                 "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
@@ -451,15 +451,15 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
         t0 = time.time()
         
         fs = s3fs.S3FileSystem(
-            key=st.secrets["aws"]["aws_access_key_id"],
-            secret=st.secrets["aws"]["aws_secret_access_key"]
+            key=st.secrets["aws"].get("aws_access_key_id")    or None,
+            secret=st.secrets["aws"].get("aws_secret_access_key") or None
         )
         s3_path = f"{bucket}/gold/{table_name}/"
         
         dataset = ds.dataset(s3_path, filesystem=fs, format="parquet")
         all_cols = dataset.schema.names
         
-        # Columnas estrictamente necesarias
+        if "app_inmuebles" in table_name:
         ui_cols = [
             "id_original", "city_token", "market_token", "ubicacion_clean",
             "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",

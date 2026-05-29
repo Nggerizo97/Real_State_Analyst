@@ -40,9 +40,10 @@ permissions:
 
 env:
   TF_VERSION: "1.8.5"
-  AWS_REGION: ${{ vars.AWS_REGION }}
+  # vars.AWS_REGION debe estar configurado en Settings → Variables → Actions
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   # Variables que Terraform lee como var.xxx
-  TF_VAR_aws_region:              ${{ vars.AWS_REGION }}
+  TF_VAR_aws_region:              ${{ vars.AWS_REGION || 'us-east-1' }}
   TF_VAR_s3_bucket_name:          ${{ vars.TF_STATE_BUCKET }}
   TF_VAR_vpc_id:                  ${{ vars.TF_VAR_VPC_ID }}
   TF_VAR_public_subnet_ids:       ${{ vars.TF_VAR_SUBNET_IDS }}

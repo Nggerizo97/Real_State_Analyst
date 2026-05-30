@@ -314,11 +314,13 @@ resource "aws_ecs_task_definition" "rea_streamlit" {
   requires_compatibilities = ["FARGATE"]
 
   # ┌─────────────────────────────────────────────────────────────────────┐
-  # │  256 CPU / 1024 MB: Streamlit ocupa ~260 MB en boot. Con REA_API_URL│
-  # │  activo no carga el modelo localmente → 1 GiB es ampliamente seguro. │
+  # │  512 CPU / 2048 MB: Streamlit + PyArrow (app_inmuebles_scored +     │
+  # │  mercado_analitica lazy) ocupa ~800 MB de pico medido. 2 GiB deja   │
+  # │  1.2 GiB de margen para picos de GC y conversión pandas/PyArrow.    │
+  # │  CPU 512 acelera dataset.to_table() que es CPU-bound en C++.        │
   # └─────────────────────────────────────────────────────────────────────┘
-  cpu    = "256"
-  memory = "1024"
+  cpu    = "512"
+  memory = "2048"
 
   execution_role_arn = aws_iam_role.ecs_exec_role.arn
   task_role_arn      = aws_iam_role.ecs_task_role.arn

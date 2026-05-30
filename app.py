@@ -818,18 +818,14 @@ print("\n[REABOOT] 🚀 === INICIANDO BOOT DE APP.PY ===", flush=True)
 tracemalloc.start()
 
 manifest = load_manifest()
-gold_analitica = load_mercado_analitica()
-gold_portales  = load_portal_operacion()
-if gold_portales is not None and not gold_portales.empty and "gold_snapshot_at" in gold_portales.columns:
-    latest_snapshot = gold_portales["gold_snapshot_at"].max()
-    gold_portales = gold_portales[gold_portales["gold_snapshot_at"] == latest_snapshot]
+# Tablas analíticas diferidas: se cargan en el Tab 1 DESPUÉS de que load_gold()
+# complete y libere su intermedio PyArrow, para que los picos de RAM sean
+# secuenciales (no simultáneos) dentro del límite de 2 GiB del Fargate.
+gold_analitica = None
+gold_portales  = None
 
-curr, peak = tracemalloc.get_traced_memory()
-print(f"[REABOOT] MEMORY AFTER ALL Caches: Current {curr/1e6:.1f}MB, Peak {peak/1e6:.1f}MB", flush=True)
-
-# Inicializar base de datos del usuario en sesión
+# Única carga pesada en boot: app_inmuebles_scored
 if "master_db" not in st.session_state:
-    # Carga automática al arranque — @st.cache_data lo cachea entre reruns
     st.session_state.master_db = load_gold()
 
 if "bundle" not in st.session_state:
@@ -837,22 +833,15 @@ if "bundle" not in st.session_state:
 
 df = st.session_state.master_db
 
-# KPIs globales y del clúster con base en las tablas agregadas ligeras para evitar OOM
-if gold_portales is not None and not gold_portales.empty and "portal_ofertas_activas" in gold_portales.columns:
-    N = int(gold_portales["portal_ofertas_activas"].sum())
-    N_PORTALES = len(gold_portales)
-    PORTALES_SANOS = int((gold_portales.get("checkpoint_status", pd.Series(["ok"])) == "ok").sum()) if "checkpoint_status" in gold_portales.columns else N_PORTALES
-else:
-    N = 101106
-    N_PORTALES = 7
-    PORTALES_SANOS = 7
+curr, peak = tracemalloc.get_traced_memory()
+print(f"[REABOOT] MEMORY AFTER load_gold: Current {curr/1e6:.1f}MB, Peak {peak/1e6:.1f}MB", flush=True)
 
-if gold_analitica is not None and not gold_analitica.empty:
-    N_MERCADOS = int(gold_analitica[gold_analitica["analytics_level"] == "market"]["market_token"].nunique())
-    N_CIUDADES = int(gold_analitica[gold_analitica["analytics_level"] == "city"]["city_token"].nunique())
-else:
-    N_MERCADOS = 25
-    N_CIUDADES = 133
+# KPIs derivados del df principal — no requieren tablas analíticas en boot
+N          = len(df) if df is not None and not df.empty else 101106
+N_PORTALES = int(df["fuente"].nunique()) if df is not None and "fuente" in df.columns else 7
+PORTALES_SANOS = N_PORTALES
+N_MERCADOS = int(df["market_token"].nunique()) if df is not None and "market_token" in df.columns else 25
+N_CIUDADES = int(df["city_token"].nunique())   if df is not None and "city_token" in df.columns else 133
 
 MED_PRECIO = float(df["precio_num"].median()) if df is not None and not df.empty else 585000000.0
 MED_M2     = float(df["precio_m2"].median())  if df is not None and "precio_m2" in df.columns and not df.empty else 5150000.0
@@ -1549,6 +1538,12 @@ with tab2:
             )
 
         # ── Market Gallery: Inteligencia Multi-Portal ────────────────────────
+        # Lazy-load: primer acceso real a portal_operacion (DESPUÉS de load_gold)
+        if gold_portales is None:
+            gold_portales = load_portal_operacion()
+            if gold_portales is not None and not gold_portales.empty and "gold_snapshot_at" in gold_portales.columns:
+                latest_snapshot = gold_portales["gold_snapshot_at"].max()
+                gold_portales = gold_portales[gold_portales["gold_snapshot_at"] == latest_snapshot]
         if gold_portales is not None and not gold_portales.empty:
             st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
             st.markdown('<div class="section-label">Galería de Oportunidades por Portal</div>', unsafe_allow_html=True)
@@ -1659,6 +1654,10 @@ with tab2:
                                    zerolinecolor="#2c2c3a", zerolinewidth=1),
                         yaxis=dict(showgrid=False))
             st.plotly_chart(fig_bar, width="stretch")
+
+        # Lazy-load: primer acceso real a mercado_analitica (DESPUÉS de load_gold)
+        if gold_analitica is None:
+            gold_analitica = load_mercado_analitica()
 
         with inv2:
             if gold_analitica is not None and "market_quality_score" in gold_analitica.columns:
@@ -1828,6 +1827,9 @@ with tab3:
     st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
 
     # ── Bandas de referencia (mercado_analitica) ─────────────────
+    # Lazy-load de seguridad en Tab 3 (en caso de que Tab 1 no haya cargado)
+    if gold_analitica is None:
+        gold_analitica = load_mercado_analitica()
     if gold_analitica is not None and "lower_bound_ref" in gold_analitica.columns:
         st.markdown('<div class="section-label">Bandas de precio por mercado (mercado_analitica)</div>',
                     unsafe_allow_html=True)

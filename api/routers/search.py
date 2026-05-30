@@ -16,14 +16,16 @@ router = APIRouter(prefix="/search", tags=["Search"])
 
 # Columnas que se devuelven en los items (subset liviano del Gold)
 _ITEM_COLS = [
-    "id", "titulo", "tipo_inmueble", "estado_inmueble",
+    "id", "titulo", "ubicacion_clean", "ubicacion_norm", "tipo_inmueble", "estado_inmueble",
     "precio_num", "area_m2", "habitaciones", "banos", "garajes",
     "city_token", "market_token", "comuna_mercado", "sector_mercado",
-    "fuente", "score_inversion", "precio_predicho", "url",
+    "fuente", "rentabilidad_potencial", "estado_inversion", "num_portales",
+    "dispersion_pct_grupo", "precio_min_grupo", "precio_max_grupo",
+    "score_inversion", "precio_predicho", "first_seen_date", "precio_cambio_pct", "url",
 ]
 
 # Campos y direcciones permitidas para ORDER BY (whitelist anti-injection)
-_SORTABLE = frozenset(["precio_num", "area_m2", "habitaciones", "score_inversion", "precio_predicho"])
+_SORTABLE = frozenset(["precio_num", "area_m2", "habitaciones", "score_inversion", "precio_predicho", "rentabilidad_potencial", "num_portales"])
 _DIRECTIONS = frozenset(["asc", "desc"])
 
 _TOKEN_RE = re.compile(r"^[\w\-]{1,64}$")  # acepta letras, dígitos, _ y -
@@ -101,6 +103,10 @@ def search(req: SearchRequest) -> SearchResponse:
         conditions.append("habitaciones >= ?")
         params.append(int(req.habitaciones_min))
 
+    if req.num_portales_min is not None:
+        conditions.append("num_portales >= ?")
+        params.append(int(req.num_portales_min))
+
     if req.fuentes:
         safe_fuentes = [_safe_token(f) for f in req.fuentes]
         placeholders = ", ".join("?" * len(safe_fuentes))
@@ -175,6 +181,37 @@ def search_metadata():
             "fuentes": fuentes,
             "price_min": float(price_range[0]) if price_range[0] else 0,
             "price_max": float(price_range[1]) if price_range[1] else 0,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/summary")
+def search_summary():
+    """Resumen global liviano para el frontend Streamlit API-first."""
+    try:
+        row = db.query_one(
+            """
+            SELECT
+                COUNT(*) AS total_inmuebles,
+                COUNT(DISTINCT market_token) AS n_mercados,
+                COUNT(DISTINCT city_token) AS n_ciudades,
+                COUNT(DISTINCT fuente) AS n_portales,
+                MEDIAN(precio_num) AS med_precio,
+                MEDIAN(precio_num / NULLIF(area_m2, 0)) AS med_precio_m2,
+                SUM(CASE WHEN estado_inversion = 'Oportunidad' THEN 1 ELSE 0 END) AS n_oportunidades
+            FROM inmuebles
+            WHERE precio_num > 0
+            """
+        )
+        return {
+            "total_inmuebles": int(row[0] or 0),
+            "n_mercados": int(row[1] or 0),
+            "n_ciudades": int(row[2] or 0),
+            "n_portales": int(row[3] or 0),
+            "med_precio": float(row[4] or 0),
+            "med_precio_m2": float(row[5] or 0),
+            "n_oportunidades": int(row[6] or 0),
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

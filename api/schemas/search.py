@@ -17,6 +17,7 @@ class SearchRequest(BaseModel):
     area_min: Optional[float] = Field(None, ge=0)
     area_max: Optional[float] = Field(None)
     habitaciones_min: Optional[int] = Field(None, ge=0)
+    num_portales_min: Optional[int] = Field(None, ge=1)
     fuentes: Optional[List[str]] = None
     # Paginación
     limit: int = Field(50, ge=1, le=500)
@@ -41,6 +42,8 @@ class SearchRequest(BaseModel):
 class PropertyItem(BaseModel):
     id: Optional[str] = None
     titulo: Optional[str] = None
+    ubicacion_clean: Optional[str] = None
+    ubicacion_norm: Optional[str] = None
     tipo_inmueble: Optional[str] = None
     estado_inmueble: Optional[str] = None
     precio_num: Optional[float] = None
@@ -53,8 +56,16 @@ class PropertyItem(BaseModel):
     comuna_mercado: Optional[str] = None
     sector_mercado: Optional[str] = None
     fuente: Optional[str] = None
+    rentabilidad_potencial: Optional[float] = None
+    estado_inversion: Optional[str] = None
+    num_portales: Optional[float] = None
+    dispersion_pct_grupo: Optional[float] = None
+    precio_min_grupo: Optional[float] = None
+    precio_max_grupo: Optional[float] = None
     score_inversion: Optional[float] = None
     precio_predicho: Optional[float] = None
+    first_seen_date: Optional[str] = None
+    precio_cambio_pct: Optional[float] = None
     url: Optional[str] = None
     extra: Optional[Dict[str, Any]] = None
 

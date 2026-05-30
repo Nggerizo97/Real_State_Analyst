@@ -129,48 +129,109 @@ def _api_available() -> bool:
     return bool(REA_API_URL) and _requests is not None
 
 
+@st.cache_data(show_spinner=False, ttl=1800)
+def api_search_metadata() -> dict:
+    if not _api_available():
+        return {}
+    try:
+        resp = _requests.get(f"{REA_API_URL}/search/metadata", timeout=_API_TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        st.warning(f"API /search/metadata no disponible: {exc}")
+        return {}
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def api_catalog_summary() -> dict:
+    if not _api_available():
+        return {}
+    try:
+        resp = _requests.get(f"{REA_API_URL}/search/summary", timeout=_API_TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        st.warning(f"API /search/summary no disponible: {exc}")
+        return {}
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def api_markets() -> pd.DataFrame:
+    if not _api_available():
+        return pd.DataFrame()
+    try:
+        resp = _requests.get(f"{REA_API_URL}/markets", timeout=_API_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        return pd.DataFrame(data) if data else pd.DataFrame()
+    except Exception as exc:
+        st.warning(f"API /markets no disponible: {exc}")
+        return pd.DataFrame()
+
+
 def api_search(
     cities: list,
     price_min: float,
     price_max: float,
+    markets: list | None = None,
     tipo_inmueble: str | None = None,
+    estado_inmueble: str | None = None,
     area_min: float | None = None,
     area_max: float | None = None,
     habitaciones_min: int | None = None,
+    num_portales_min: int | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> pd.DataFrame:
     """Llama a POST /search y devuelve un DataFrame compatible con el formato Gold."""
-    payload = {
-        "price_min": price_min,
-        "price_max": price_max,
-        "limit": limit,
-        "offset": offset,
-    }
-    if cities:
-        payload["city_token"] = cities[0]  # /search filtra por una ciudad a la vez
-    if tipo_inmueble:
-        payload["tipo_inmueble"] = tipo_inmueble
-    if area_min is not None:
-        payload["area_min"] = area_min
-    if area_max is not None:
-        payload["area_max"] = area_max
-    if habitaciones_min is not None:
-        payload["habitaciones_min"] = habitaciones_min
+    queries = cities or markets or [None]
+    frames = []
 
-    try:
-        resp = _requests.post(
-            f"{REA_API_URL}/search",
-            json=payload,
-            timeout=_API_TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        items = data.get("items", [])
-        return pd.DataFrame(items) if items else pd.DataFrame()
-    except Exception as exc:
-        st.warning(f"API no disponible, usando S3 directo: {exc}")
+    for token in queries:
+        payload = {
+            "price_min": price_min,
+            "price_max": price_max,
+            "limit": limit,
+            "offset": offset,
+        }
+        if cities and token:
+            payload["city_token"] = token
+        elif markets and token:
+            payload["market_token"] = token
+        if tipo_inmueble:
+            payload["tipo_inmueble"] = tipo_inmueble
+        if estado_inmueble:
+            payload["estado_inmueble"] = estado_inmueble
+        if area_min is not None:
+            payload["area_min"] = area_min
+        if area_max is not None:
+            payload["area_max"] = area_max
+        if habitaciones_min is not None:
+            payload["habitaciones_min"] = habitaciones_min
+        if num_portales_min is not None:
+            payload["num_portales_min"] = num_portales_min
+
+        try:
+            resp = _requests.post(
+                f"{REA_API_URL}/search",
+                json=payload,
+                timeout=_API_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("items", [])
+            if items:
+                frames.append(pd.DataFrame(items))
+        except Exception as exc:
+            st.warning(f"API no disponible, usando S3 directo: {exc}")
+            return pd.DataFrame()
+
+    if not frames:
         return pd.DataFrame()
+
+    merged = pd.concat(frames, ignore_index=True)
+    merged = merged.drop_duplicates(subset=["url"], keep="first") if "url" in merged.columns else merged
+    return _clean_gold(merged)
 
 
 def api_predict(row: dict) -> dict | None:
@@ -830,28 +891,42 @@ manifest = load_manifest()
 gold_analitica = None
 gold_portales  = None
 
-# Única carga pesada en boot: app_inmuebles_scored
-if "master_db" not in st.session_state:
+# Modo API-first: no cargar el Gold completo en memoria si el backend DuckDB está disponible.
+api_mode = _api_available()
+catalog_summary = api_catalog_summary() if api_mode else {}
+market_catalog = api_markets() if api_mode else pd.DataFrame()
+search_meta = api_search_metadata() if api_mode else {}
+
+if not api_mode and "master_db" not in st.session_state:
     st.session_state.master_db = load_gold()
 
 if "bundle" not in st.session_state:
     st.session_state.bundle = None
 
-df = st.session_state.master_db
+df = None if api_mode else st.session_state.master_db
 
 curr, peak = tracemalloc.get_traced_memory()
-print(f"[REABOOT] MEMORY AFTER load_gold: Current {curr/1e6:.1f}MB, Peak {peak/1e6:.1f}MB", flush=True)
+print(f"[REABOOT] MEMORY AFTER boot: Current {curr/1e6:.1f}MB, Peak {peak/1e6:.1f}MB", flush=True)
 
-# KPIs derivados del df principal — no requieren tablas analíticas en boot
-N          = len(df) if df is not None and not df.empty else 101106
-N_PORTALES = int(df["fuente"].nunique()) if df is not None and "fuente" in df.columns else 7
-PORTALES_SANOS = N_PORTALES
-N_MERCADOS = int(df["market_token"].nunique()) if df is not None and "market_token" in df.columns else 25
-N_CIUDADES = int(df["city_token"].nunique())   if df is not None and "city_token" in df.columns else 133
-
-MED_PRECIO = float(df["precio_num"].median()) if df is not None and not df.empty else 585000000.0
-MED_M2     = float(df["precio_m2"].median())  if df is not None and "precio_m2" in df.columns and not df.empty else 5150000.0
-N_OPT      = int((df["estado_inversion"] == "Oportunidad").sum()) if df is not None and "estado_inversion" in df.columns else 2022
+# KPIs del boot: API-first si existe backend, fallback al dataframe local sólo cuando sea necesario.
+if api_mode and catalog_summary:
+    N = int(catalog_summary.get("total_inmuebles", 101106))
+    N_PORTALES = int(catalog_summary.get("n_portales", 7))
+    PORTALES_SANOS = N_PORTALES
+    N_MERCADOS = int(catalog_summary.get("n_mercados", 25))
+    N_CIUDADES = int(catalog_summary.get("n_ciudades", 133))
+    MED_PRECIO = float(catalog_summary.get("med_precio", 585000000.0))
+    MED_M2 = float(catalog_summary.get("med_precio_m2", 5150000.0))
+    N_OPT = int(catalog_summary.get("n_oportunidades", 2022))
+else:
+    N          = len(df) if df is not None and not df.empty else 101106
+    N_PORTALES = int(df["fuente"].nunique()) if df is not None and "fuente" in df.columns else 7
+    PORTALES_SANOS = N_PORTALES
+    N_MERCADOS = int(df["market_token"].nunique()) if df is not None and "market_token" in df.columns else 25
+    N_CIUDADES = int(df["city_token"].nunique())   if df is not None and "city_token" in df.columns else 133
+    MED_PRECIO = float(df["precio_num"].median()) if df is not None and not df.empty else 585000000.0
+    MED_M2     = float(df["precio_m2"].median())  if df is not None and "precio_m2" in df.columns and not df.empty else 5150000.0
+    N_OPT      = int((df["estado_inversion"] == "Oportunidad").sum()) if df is not None and "estado_inversion" in df.columns else 2022
 
 MAPE_BADGE = manifest.get("metrics", {}).get("mape", "20.9%")
 DEPLOYED = (
@@ -1213,7 +1288,10 @@ with tab1:
     with st.expander("▸ Filtros de búsqueda", expanded=True):
         fc_geo1, fc_geo2, fc_geo3, fc_geo4 = st.columns(4)
         with fc_geo1:
-            if gold_analitica is not None and not gold_analitica.empty:
+            if api_mode and search_meta:
+                mercados_disp = sorted([str(m) for m in search_meta.get("markets", [])
+                                         if m and str(m) not in ("nan", "otra_ciudad_metropolitana", "mercado_otro")])
+            elif gold_analitica is not None and not gold_analitica.empty:
                 mercados_disp = sorted([str(m) for m in gold_analitica["market_token"].unique()
                                          if m and str(m) not in ("nan", "otra_ciudad_metropolitana", "mercado_otro")])
             elif df is not None:
@@ -1226,7 +1304,12 @@ with tab1:
                                           help="Mercado comercial / metropolitano")
         with fc_geo2:
             # Ciudades filtradas por mercado seleccionado
-            if gold_analitica is not None and not gold_analitica.empty:
+            if api_mode and not market_catalog.empty:
+                if mercado_sel:
+                    ciudades_filtradas = market_catalog[market_catalog["market_token"].isin(mercado_sel)]["city_token"].dropna().unique()
+                else:
+                    ciudades_filtradas = market_catalog["city_token"].dropna().unique()
+            elif gold_analitica is not None and not gold_analitica.empty:
                 if mercado_sel:
                     ciudades_filtradas = gold_analitica[(gold_analitica["market_token"].isin(mercado_sel)) & (gold_analitica["analytics_level"] == "city")]["city_token"].unique()
                 else:
@@ -1263,7 +1346,10 @@ with tab1:
 
         fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 1])
         with fc1:
-            if df is not None:
+            if api_mode and search_meta:
+                tipos_disp = sorted([t for t in search_meta.get("tipos_inmueble", [])
+                                      if t not in ("desconocido", "otro", "nan")])
+            elif df is not None:
                 tipos_disp = sorted([t for t in df["tipo_inmueble"].unique()
                                       if t not in ("desconocido", "otro", "nan")])
             else:
@@ -1281,6 +1367,8 @@ with tab1:
         p_max_slider_m = (
             float(min(monto_max * 1.3, df["precio_num"].quantile(0.97))) / _M
             if df is not None
+            else float(min(monto_max * 1.3, search_meta.get("price_max", monto_max * 1.3))) / _M
+            if api_mode and search_meta
             else float(monto_max * 1.3) / _M
         )
         _val_max_m = min(float(monto_max) / _M, p_max_slider_m)
@@ -1304,60 +1392,76 @@ with tab1:
             buscar_click = st.button("🔍 Buscar Inmuebles", type="primary", use_container_width=True)
             
         if buscar_click:
-            # df ya está en session_state desde el arranque — solo hacer rerun
-            # para que el bloque de filtrado de más abajo aplique los valores actuales
-            if st.session_state.get("master_db") is None:
+            if api_mode:
+                estado_api = estado_sel[0] if len(estado_sel) == 1 else None
+                tipo_api = tipo_sel[0] if len(tipo_sel) == 1 else None
+                num_portales_min = 2 if only_multiportal else None
+                st.session_state.tab1_candidates = api_search(
+                    cities=ciudad_sel,
+                    markets=mercado_sel if not ciudad_sel else None,
+                    price_min=precio_rango[0],
+                    price_max=precio_rango[1],
+                    tipo_inmueble=tipo_api,
+                    estado_inmueble=estado_api,
+                    habitaciones_min=habs_min,
+                    num_portales_min=num_portales_min,
+                    limit=200,
+                )
+            elif st.session_state.get("master_db") is None:
                 st.session_state.master_db = load_gold()
             st.rerun()
 
-    # ── Control de Flujo Defensivo (Si no hay datos cargados en sesión) ──
-    if df is None or df.empty:
-        st.info("⏳ Cargando datos desde S3... Si persiste, recarga la página.")
-        st.stop()
+    # ── Obtención de candidatos ──────────────────────────────────
+    if api_mode:
+        candidatos = st.session_state.get("tab1_candidates", pd.DataFrame())
+    else:
+        if df is None or df.empty:
+            st.info("⏳ Cargando datos desde S3... Si persiste, recarga la página.")
+            st.stop()
 
-    # ── Filtrado ─────────────────────────────────────────────────
-    mask = (df["precio_num"].between(*precio_rango))
-    if mercado_sel:
-        mask &= df["market_token"].isin(mercado_sel)
-    if ciudad_sel:
-        # Convertir ciudades a minúsculas para coincidencia en categórica normalizada
-        ciudad_sel_lower = [str(c).lower().strip() for c in ciudad_sel]
-        mask &= df["city_token"].isin(ciudad_sel_lower)
-    if 'comuna_sel' in locals() and comuna_sel:
-        mask &= df["comuna_mercado"].isin(comuna_sel)
-    if 'sector_sel' in locals() and sector_sel:
-        mask &= df["sector_mercado"].isin(sector_sel)
-    if tipo_sel:
-        mask &= df["tipo_inmueble"].isin(tipo_sel)
-    if estado_sel:
-        mask &= df["estado_inmueble"].isin(estado_sel)
-    if "habitaciones" in df.columns:
-        mask &= df["habitaciones"].fillna(0) >= habs_min
-    if only_multiportal and "num_portales" in df.columns:
-        mask &= df["num_portales"].fillna(0) > 1
+        mask = (df["precio_num"].between(*precio_rango))
+        if mercado_sel:
+            mask &= df["market_token"].isin(mercado_sel)
+        if ciudad_sel:
+            ciudad_sel_lower = [str(c).lower().strip() for c in ciudad_sel]
+            mask &= df["city_token"].isin(ciudad_sel_lower)
+        if 'comuna_sel' in locals() and comuna_sel:
+            mask &= df["comuna_mercado"].isin(comuna_sel)
+        if 'sector_sel' in locals() and sector_sel:
+            mask &= df["sector_mercado"].isin(sector_sel)
+        if tipo_sel:
+            mask &= df["tipo_inmueble"].isin(tipo_sel)
+        if estado_sel:
+            mask &= df["estado_inmueble"].isin(estado_sel)
+        if "habitaciones" in df.columns:
+            mask &= df["habitaciones"].fillna(0) >= habs_min
+        if only_multiportal and "num_portales" in df.columns:
+            mask &= df["num_portales"].fillna(0) > 1
 
-    candidatos = df[mask].sort_values("rentabilidad_potencial", ascending=False).head(25)
-    st.session_state.tab1_candidates = candidatos
+        candidatos = df[mask].sort_values("rentabilidad_potencial", ascending=False).head(25)
+        st.session_state.tab1_candidates = candidatos
 
     # ── Resultados ───────────────────────────────────────────────
     if candidatos.empty:
-        # --- DIAGNÓSTICO TEMPORAL ---
-        mask_diag = df["precio_num"].between(*precio_rango)
-        c2 = mask_diag.sum()
-        if mercado_sel: mask_diag &= df["market_token"].isin(mercado_sel)
-        c3 = mask_diag.sum()
-        if tipo_sel: mask_diag &= df["tipo_inmueble"].isin(tipo_sel)
-        c4 = mask_diag.sum()
-        if estado_sel: mask_diag &= df["estado_inmueble"].isin(estado_sel)
-        c5 = mask_diag.sum()
-        
-        st.error("Sin candidatos para los filtros actuales. Ajusta el rango de precio, mercado o ciudad.")
-        st.warning(f"🔍 **DIAGNÓSTICO DETALLADO: ¿Por qué hay 0?**\n\n"
-                   f"1. En rango de precio (Toda Colombia): **{c2}**\n"
-                   f"2. En el mercado seleccionado: **{c3}**\n"
-                   f"3. Que sean tipo '{tipo_sel}': **{c4}**\n"
-                   f"4. Que ADEMÁS tengan etiqueta explicita de estado '{estado_sel}': **{c5}**\n\n"
-                   f"👉 Si el paso 4 cae a **0**, significa que los portales inmobiliarios NO etiquetaron correctamente el estado de esos inmuebles (los dejaron vacíos o 'desconocido'). **Quita la 'X' en Estado** para verlos.")
+        if api_mode:
+            st.error("Sin candidatos para los filtros actuales. Ajusta el rango de precio, mercado o ciudad.")
+            st.info("En modo API-first la búsqueda es on-demand: ejecuta sólo lo que pediste, no carga el catálogo completo en memoria.")
+        else:
+            mask_diag = df["precio_num"].between(*precio_rango)
+            c2 = mask_diag.sum()
+            if mercado_sel: mask_diag &= df["market_token"].isin(mercado_sel)
+            c3 = mask_diag.sum()
+            if tipo_sel: mask_diag &= df["tipo_inmueble"].isin(tipo_sel)
+            c4 = mask_diag.sum()
+            if estado_sel: mask_diag &= df["estado_inmueble"].isin(estado_sel)
+            c5 = mask_diag.sum()
+            st.error("Sin candidatos para los filtros actuales. Ajusta el rango de precio, mercado o ciudad.")
+            st.warning(f"🔍 **DIAGNÓSTICO DETALLADO: ¿Por qué hay 0?**\n\n"
+                       f"1. En rango de precio (Toda Colombia): **{c2}**\n"
+                       f"2. En el mercado seleccionado: **{c3}**\n"
+                       f"3. Que sean tipo '{tipo_sel}': **{c4}**\n"
+                       f"4. Que ADEMÁS tengan etiqueta explicita de estado '{estado_sel}': **{c5}**\n\n"
+                       f"👉 Si el paso 4 cae a **0**, significa que los portales inmobiliarios NO etiquetaron correctamente el estado de esos inmuebles (los dejaron vacíos o 'desconocido'). **Quita la 'X' en Estado** para verlos.")
         # ---------------------------
     else:
         res_col, chart_col = st.columns([3, 2])
@@ -1450,7 +1554,7 @@ with tab1:
             st.plotly_chart(fig, width="stretch")
 
             # Boxplot: Precio/m² candidatos vs mercado
-            if "precio_m2" in candidatos.columns and "city_token" in candidatos.columns:
+            if df is not None and "precio_m2" in candidatos.columns and "city_token" in candidatos.columns:
                 st.markdown('<div class="section-label">Precio/m² — candidatos vs mercado</div>',
                             unsafe_allow_html=True)
                 ciudades_box = [c for c in candidatos["city_token"].unique()[:3] if pd.notna(c)]
@@ -1545,7 +1649,7 @@ with tab2:
 
         # ── Market Gallery: Inteligencia Multi-Portal ────────────────────────
         # Lazy-load: primer acceso real a portal_operacion (DESPUÉS de load_gold)
-        if gold_portales is None:
+        if gold_portales is None and not api_mode:
             gold_portales = load_portal_operacion()
             if gold_portales is not None and not gold_portales.empty and "gold_snapshot_at" in gold_portales.columns:
                 latest_snapshot = gold_portales["gold_snapshot_at"].max()
@@ -1589,11 +1693,11 @@ with tab2:
                 icon = "🟢" if status == "ok" else "🔴"
 
                 # Buscar mejores oportunidades
-                mask_port = (df["fuente"] == p_id) & \
-                            (df["rentabilidad_potencial"] < 200) & \
-                            (df["rentabilidad_potencial"] > -50)
-                
-                top_port = df[mask_port].sort_values("rentabilidad_potencial", ascending=False).head(3)
+                source_df = df if df is not None else cands
+                mask_port = (source_df["fuente"] == p_id) & \
+                            (source_df["rentabilidad_potencial"] < 200) & \
+                            (source_df["rentabilidad_potencial"] > -50)
+                top_port = source_df[mask_port].sort_values("rentabilidad_potencial", ascending=False).head(3)
                 links_html = ""
                 for _, prop in top_port.iterrows():
                     url = prop.get("url", "#")
@@ -1639,8 +1743,9 @@ with tab2:
         with inv1:
             st.markdown('<div class="section-label">Rentabilidad media por mercado</div>',
                         unsafe_allow_html=True)
+            base_inv_df = df if df is not None else cands
             zona_rent = (
-                df.groupby("market_token")["rentabilidad_potencial"]
+                base_inv_df.groupby("market_token")["rentabilidad_potencial"]
                 .agg(["mean", "count"]).reset_index()
             )
             zona_rent = zona_rent[zona_rent["count"] >= 10].sort_values("mean", ascending=True).tail(15)
@@ -1662,7 +1767,7 @@ with tab2:
             st.plotly_chart(fig_bar, width="stretch")
 
         # Lazy-load: primer acceso real a mercado_analitica (DESPUÉS de load_gold)
-        if gold_analitica is None:
+        if gold_analitica is None and not api_mode:
             gold_analitica = load_mercado_analitica()
 
         with inv2:
@@ -1688,7 +1793,7 @@ with tab2:
             else:
                 st.markdown('<div class="section-label">Precio/m² por mercado</div>',
                             unsafe_allow_html=True)
-                m2_mkt = df.groupby("market_token")["precio_m2"].median().reset_index()
+                m2_mkt = base_inv_df.groupby("market_token")["precio_m2"].median().reset_index()
                 m2_mkt = m2_mkt.sort_values("precio_m2", ascending=False).head(15)
                 fig_m2 = go.Figure(go.Bar(
                     x=m2_mkt["market_token"].str.replace("_", " ").str.title(),
@@ -1729,7 +1834,7 @@ with tab2:
 Ayudas a decidir qué inmueble comprar considerando: mercado (market_token), ciudad, señal del modelo,
 inteligencia cross-portal, market_quality_score y perspectivas regionales.
 Usa la jerarquía mercado → ciudad → zona. Cita datos concretos. Fecha de corte: {fc}.""".format(fc=FECHA_CORTE)
-    render_chat("t2", system_t2, "¿Cuál mercado tiene mejor perspectiva?", cands if not cands.empty else df.head(20))
+    render_chat("t2", system_t2, "¿Cuál mercado tiene mejor perspectiva?", cands if not cands.empty else (df.head(20) if df is not None else None))
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1739,195 +1844,193 @@ with tab3:
     st.markdown("## Dashboard — Inteligencia de mercado Colombia")
     st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
 
-    # ── Segmentación ─────────────────────────────────────────────
-    st.markdown('<div class="section-label">Segmentación del mercado</div>', unsafe_allow_html=True)
-    v1, v2 = st.columns(2)
-    with v1:
-        _segmento = df["precio_num"].apply(
-            lambda x: "VIS (≤$250M)" if x <= 250_000_000 else "No VIS (>$250M)"
-        )
-        seg_cnt = _segmento.value_counts()
-        fig_vis = go.Figure(go.Pie(
-            labels=seg_cnt.index, values=seg_cnt.values, hole=0.5,
-            marker=dict(colors=["#1a6b4a", "#1a4a8b"], line=dict(color="white", width=2)),
-            textfont=dict(family="DM Sans", size=12),
-        ))
-        dark_layout(fig_vis, height=280,
-                    title=dict(text="VIS vs No VIS", font=dict(family="Playfair Display", size=14, color=_TEXT)),
-                    legend=dict(orientation="h", y=-0.15))
-        st.plotly_chart(fig_vis, width="stretch")
-        st.caption("Proxy: inmuebles ≤$250M clasificados como VIS.")
-
-    with v2:
-        if "estado_inmueble" in df.columns:
-            est_cnt = df["estado_inmueble"].value_counts().head(4)
-            fig_est = go.Figure(go.Bar(
-                x=est_cnt.index.str.title(), y=est_cnt.values,
-                marker=dict(color=["#1a6b4a", "#b8935a", "#1a4a8b", "#8b2020"][:len(est_cnt)]),
-                text=est_cnt.values, textposition="outside",
+    if api_mode and df is None:
+        st.info("Dashboard agregado deshabilitado en modo API-first para evitar cargar el catálogo completo en RAM. El Buscador y la Valoración siguen operando on-demand vía DuckDB.")
+    else:
+        # ── Segmentación ─────────────────────────────────────────────
+        st.markdown('<div class="section-label">Segmentación del mercado</div>', unsafe_allow_html=True)
+        v1, v2 = st.columns(2)
+        with v1:
+            _segmento = df["precio_num"].apply(
+                lambda x: "VIS (≤$250M)" if x <= 250_000_000 else "No VIS (>$250M)"
+            )
+            seg_cnt = _segmento.value_counts()
+            fig_vis = go.Figure(go.Pie(
+                labels=seg_cnt.index, values=seg_cnt.values, hole=0.5,
+                marker=dict(colors=["#1a6b4a", "#1a4a8b"], line=dict(color="white", width=2)),
+                textfont=dict(family="DM Sans", size=12),
             ))
-            dark_layout(fig_est, height=280,
-                        title=dict(text="Nuevo vs Usado", font=dict(family="Playfair Display", size=14, color=_TEXT)),
-                        xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor=_GRID))
-            st.plotly_chart(fig_est, width="stretch")
+            dark_layout(fig_vis, height=280,
+                        title=dict(text="VIS vs No VIS", font=dict(family="Playfair Display", size=14, color=_TEXT)),
+                        legend=dict(orientation="h", y=-0.15))
+            st.plotly_chart(fig_vis, width="stretch")
+            st.caption("Proxy: inmuebles ≤$250M clasificados como VIS.")
 
-    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+        with v2:
+            if "estado_inmueble" in df.columns:
+                est_cnt = df["estado_inmueble"].value_counts().head(4)
+                fig_est = go.Figure(go.Bar(
+                    x=est_cnt.index.str.title(), y=est_cnt.values,
+                    marker=dict(color=["#1a6b4a", "#b8935a", "#1a4a8b", "#8b2020"][:len(est_cnt)]),
+                    text=est_cnt.values, textposition="outside",
+                ))
+                dark_layout(fig_est, height=280,
+                            title=dict(text="Nuevo vs Usado", font=dict(family="Playfair Display", size=14, color=_TEXT)),
+                            xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor=_GRID))
+                st.plotly_chart(fig_est, width="stretch")
 
-    # ── Precio / m² por mercado ──────────────────────────────────
-    st.markdown('<div class="section-label">Eficiencia de compra — precio por m² por mercado</div>',
-                unsafe_allow_html=True)
-    st.caption("Mercados con menor precio/m² ofrecen más área por peso invertido.")
-
-    m2_df = (
-        df.groupby("market_token")
-        .agg(precio_m2_mediano=("precio_m2", "median"), n=("precio_num", "count"))
-        .reset_index()
-    )
-    m2_df = m2_df[m2_df["n"] >= 10].sort_values("precio_m2_mediano", ascending=False).head(20)
-    fig_m2bar = go.Figure(go.Bar(
-        x=m2_df["market_token"].str.replace("_", " ").str.title(),
-        y=m2_df["precio_m2_mediano"] / 1e6,
-        marker=dict(color=m2_df["precio_m2_mediano"],
-                    colorscale=[[0, "#e8f4ef"], [1, "#0a3d28"]], showscale=False),
-        text=m2_df["precio_m2_mediano"].apply(lambda x: f"${x/1e6:.1f}M"),
-        textposition="outside",
-    ))
-    dark_layout(fig_m2bar, height=320,
-                xaxis=dict(tickangle=-35, showgrid=False),
-                yaxis=dict(title="M COP / m²", showgrid=True, gridcolor=_GRID))
-    st.plotly_chart(fig_m2bar, width="stretch")
-
-    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
-
-    # ── Top Sectores por Oportunidad ─────────────────────────────
-    st.markdown('<div class="section-label">Top 15 Sectores con mayor rentabilidad estructural (Oportunidad)</div>',
-                unsafe_allow_html=True)
-    st.caption("Sectores barriales con mejor señal algorítmica a nivel nacional. (Mínimo 5 ofertas)")
-
-    if "sector_mercado" in df.columns:
-        sec_df = (
-            df.groupby("sector_mercado")
-            .agg(rent_media=("rentabilidad_potencial", "mean"), n=("precio_num", "count"), pm2=("precio_m2", "median"))
-            .reset_index()
-        )
-        sec_df = sec_df[sec_df["n"] >= 5].sort_values("rent_media", ascending=False).head(15)
-        
-        if not sec_df.empty:
-            fig_sec = go.Figure(go.Bar(
-                x=sec_df["sector_mercado"].str.replace("_", " ").str.title(),
-                y=sec_df["rent_media"],
-                marker=dict(color=sec_df["rent_media"],
-                            colorscale=[[0, "#b8935a"], [1, "#1a6b4a"]], showscale=False),
-                text=sec_df["rent_media"].apply(lambda x: f"{x:+.1f}%"),
-                textposition="outside",
-                hovertemplate="<b>%{x}</b><br>Rentabilidad: %{text}<br>Ofertas: %{customdata[0]}<br>Precio/m² mediano: $%{customdata[1]:.2f}M<extra></extra>",
-                customdata=np.stack((sec_df["n"], sec_df["pm2"]/1e6), axis=-1)
-            ))
-            dark_layout(fig_sec, height=360,
-                        xaxis=dict(tickangle=-35, showgrid=False),
-                        yaxis=dict(title="Rentabilidad Media (%)", showgrid=True, gridcolor=_GRID))
-            st.plotly_chart(fig_sec, width="stretch")
-        else:
-            st.info("No hay suficientes datos a nivel sectorial con más de 5 ofertas.")
-
-    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
-
-    # ── Bandas de referencia (mercado_analitica) ─────────────────
-    # Lazy-load de seguridad en Tab 3 (en caso de que Tab 1 no haya cargado)
-    if gold_analitica is None:
-        gold_analitica = load_mercado_analitica()
-    if gold_analitica is not None and "lower_bound_ref" in gold_analitica.columns:
-        st.markdown('<div class="section-label">Bandas de precio por mercado (mercado_analitica)</div>',
-                    unsafe_allow_html=True)
-        st.caption("Precio/m² mediano con bandas lower/upper — útil para evaluar si un inmueble está dentro del rango justo.")
-
-        mkt_bands = gold_analitica[gold_analitica["analytics_level"] == "market"][
-            ["market_token", "market_n", "precio_m2_mediano", "lower_bound_ref",
-             "upper_bound_ref", "market_quality_score"]
-        ].sort_values("market_n", ascending=False).head(15).copy()
-        mkt_bands["market_label"] = mkt_bands["market_token"].str.replace("_", " ").str.title()
-
-        st.dataframe(
-            mkt_bands[["market_label", "market_n", "precio_m2_mediano", "lower_bound_ref",
-                        "upper_bound_ref", "market_quality_score"]].rename(columns={
-                "market_label": "Mercado", "market_n": "Ofertas",
-                "precio_m2_mediano": "Precio/m² Med.", "lower_bound_ref": "Banda baja",
-                "upper_bound_ref": "Banda alta", "market_quality_score": "Quality",
-            }).style.format({
-                "Precio/m² Med.": lambda x: f"${int(x):,}".replace(",", "."),
-                "Banda baja": lambda x: f"${int(x):,}".replace(",", "."),
-                "Banda alta": lambda x: f"${int(x):,}".replace(",", "."),
-                "Quality": "{:.0f}",
-            }),
-            width="stretch", hide_index=True,
-        )
         st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
 
-    # ── Señal de sobrecalentamiento por mercado ──────────────────
-    st.markdown('<div class="section-label">Señal de mercado — ¿es buen momento para comprar?</div>',
-                unsafe_allow_html=True)
-    st.caption("Porcentaje de inmuebles 'Sobrevalorado' vs 'Oportunidad' por mercado.")
+        # ── Precio / m² por mercado ──────────────────────────────────
+        st.markdown('<div class="section-label">Eficiencia de compra — precio por m² por mercado</div>',
+                    unsafe_allow_html=True)
+        st.caption("Mercados con menor precio/m² ofrecen más área por peso invertido.")
 
-    sobrev = (
-        df.groupby("market_token")["estado_inversion"]
-        .apply(lambda x: (x == "Sobrevalorado").mean() * 100).reset_index()
-    )
-    sobrev.columns = ["mercado", "pct_sobre"]
-    oport = (
-        df.groupby("market_token")["estado_inversion"]
-        .apply(lambda x: (x == "Oportunidad").mean() * 100).reset_index()
-    )
-    oport.columns = ["mercado", "pct_oport"]
-    signal_df = sobrev.merge(oport, on="mercado").sort_values("pct_sobre", ascending=False).head(20)
+        m2_df = (
+            df.groupby("market_token")
+            .agg(precio_m2_mediano=("precio_m2", "median"), n=("precio_num", "count"))
+            .reset_index()
+        )
+        m2_df = m2_df[m2_df["n"] >= 10].sort_values("precio_m2_mediano", ascending=False).head(20)
+        fig_m2bar = go.Figure(go.Bar(
+            x=m2_df["market_token"].str.replace("_", " ").str.title(),
+            y=m2_df["precio_m2_mediano"] / 1e6,
+            marker=dict(color=m2_df["precio_m2_mediano"],
+                        colorscale=[[0, "#e8f4ef"], [1, "#0a3d28"]], showscale=False),
+            text=m2_df["precio_m2_mediano"].apply(lambda x: f"${x/1e6:.1f}M"),
+            textposition="outside",
+        ))
+        dark_layout(fig_m2bar, height=320,
+                    xaxis=dict(tickangle=-35, showgrid=False),
+                    yaxis=dict(title="M COP / m²", showgrid=True, gridcolor=_GRID))
+        st.plotly_chart(fig_m2bar, width="stretch")
 
-    fig_signal = go.Figure()
-    fig_signal.add_trace(go.Bar(
-        name="Sobrevalorado %",
-        x=signal_df["mercado"].str.replace("_", " ").str.title(),
-        y=signal_df["pct_sobre"], marker_color="#8b2020", opacity=0.85,
-    ))
-    fig_signal.add_trace(go.Bar(
-        name="Oportunidad %",
-        x=signal_df["mercado"].str.replace("_", " ").str.title(),
-        y=signal_df["pct_oport"], marker_color="#1a6b4a", opacity=0.85,
-    ))
-    fig_signal.add_hline(y=40, line=dict(color="#8b2020", width=1, dash="dot"),
-                          annotation_text="Alerta sobrevaluación 40%",
-                          annotation_font=dict(size=9, color="#8b2020", family="DM Mono"))
-    dark_layout(fig_signal, height=340, barmode="group",
-                legend=dict(orientation="h", y=1.02),
-                xaxis=dict(tickangle=-35, showgrid=False),
-                yaxis=dict(title="%", showgrid=True, gridcolor=_GRID))
-    st.plotly_chart(fig_signal, width="stretch")
+        st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
 
-    # ── Análisis editorial dinámico ──────────────────────────────
-    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
-    st.markdown('<div class="section-label">Análisis editorial — basado en datos reales</div>',
-                unsafe_allow_html=True)
+        # ── Top Sectores por Oportunidad ─────────────────────────────
+        st.markdown('<div class="section-label">Top 15 Sectores con mayor rentabilidad estructural (Oportunidad)</div>',
+                    unsafe_allow_html=True)
+        st.caption("Sectores barriales con mejor señal algorítmica a nivel nacional. (Mínimo 5 ofertas)")
 
-    # Generar editorial dinámico de agregados
-    disp_med = df["dispersion_pct_grupo"].median() if "dispersion_pct_grupo" in df.columns else 0
-    pct_sobre = (df["estado_inversion"] == "Sobrevalorado").mean() * 100
-    pct_oport = (df["estado_inversion"] == "Oportunidad").mean() * 100
-    pct_vis = (df["precio_num"] <= 250_000_000).mean() * 100
+        if "sector_mercado" in df.columns:
+            sec_df = (
+                df.groupby("sector_mercado")
+                .agg(rent_media=("rentabilidad_potencial", "mean"), n=("precio_num", "count"), pm2=("precio_m2", "median"))
+                .reset_index()
+            )
+            sec_df = sec_df[sec_df["n"] >= 5].sort_values("rent_media", ascending=False).head(15)
+            
+            if not sec_df.empty:
+                fig_sec = go.Figure(go.Bar(
+                    x=sec_df["sector_mercado"].str.replace("_", " ").str.title(),
+                    y=sec_df["rent_media"],
+                    marker=dict(color=sec_df["rent_media"],
+                                colorscale=[[0, "#b8935a"], [1, "#1a6b4a"]], showscale=False),
+                    text=sec_df["rent_media"].apply(lambda x: f"{x:+.1f}%"),
+                    textposition="outside",
+                    hovertemplate="<b>%{x}</b><br>Rentabilidad: %{text}<br>Ofertas: %{customdata[0]}<br>Precio/m² mediano: $%{customdata[1]:.2f}M<extra></extra>",
+                    customdata=np.stack((sec_df["n"], sec_df["pm2"]/1e6), axis=-1)
+                ))
+                dark_layout(fig_sec, height=360,
+                            xaxis=dict(tickangle=-35, showgrid=False),
+                            yaxis=dict(title="Rentabilidad Media (%)", showgrid=True, gridcolor=_GRID))
+                st.plotly_chart(fig_sec, width="stretch")
+            else:
+                st.info("No hay suficientes datos a nivel sectorial con más de 5 ofertas.")
 
-    # Mercados más líquidos y con mejor señal
-    mkt_stats = df.groupby("market_token").agg(
-        n=("precio_num", "count"),
-        rent_media=("rentabilidad_potencial", "mean"),
-        pm2_mediana=("precio_m2", "median"),
-    ).reset_index()
-    mkt_stats = mkt_stats[mkt_stats["n"] >= 10]
-    top_liquido = mkt_stats.sort_values("n", ascending=False).head(3)["market_token"].tolist()
-    top_oport = mkt_stats.sort_values("rent_media", ascending=False).head(3)["market_token"].tolist()
-    top_caro = mkt_stats.sort_values("pm2_mediana", ascending=False).head(3)["market_token"].tolist()
+        st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
 
-    def _mkt_label(tokens):
-        return ", ".join([t.replace("_", " ").title() for t in tokens])
+        # ── Bandas de referencia (mercado_analitica) ─────────────────
+        if gold_analitica is None:
+            gold_analitica = load_mercado_analitica()
+        if gold_analitica is not None and "lower_bound_ref" in gold_analitica.columns:
+            st.markdown('<div class="section-label">Bandas de precio por mercado (mercado_analitica)</div>',
+                        unsafe_allow_html=True)
+            st.caption("Precio/m² mediano con bandas lower/upper — útil para evaluar si un inmueble está dentro del rango justo.")
 
-    ea1, ea2 = st.columns(2)
-    with ea1:
-        st.markdown(f"""
+            mkt_bands = gold_analitica[gold_analitica["analytics_level"] == "market"][
+                ["market_token", "market_n", "precio_m2_mediano", "lower_bound_ref",
+                 "upper_bound_ref", "market_quality_score"]
+            ].sort_values("market_n", ascending=False).head(15).copy()
+            mkt_bands["market_label"] = mkt_bands["market_token"].str.replace("_", " ").str.title()
+
+            st.dataframe(
+                mkt_bands[["market_label", "market_n", "precio_m2_mediano", "lower_bound_ref",
+                            "upper_bound_ref", "market_quality_score"]].rename(columns={
+                    "market_label": "Mercado", "market_n": "Ofertas",
+                    "precio_m2_mediano": "Precio/m² Med.", "lower_bound_ref": "Banda baja",
+                    "upper_bound_ref": "Banda alta", "market_quality_score": "Quality",
+                }).style.format({
+                    "Precio/m² Med.": lambda x: f"${int(x):,}".replace(",", "."),
+                    "Banda baja": lambda x: f"${int(x):,}".replace(",", "."),
+                    "Banda alta": lambda x: f"${int(x):,}".replace(",", "."),
+                    "Quality": "{:.0f}",
+                }),
+                width="stretch", hide_index=True,
+            )
+            st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+
+        st.markdown('<div class="section-label">Señal de mercado — ¿es buen momento para comprar?</div>',
+                    unsafe_allow_html=True)
+        st.caption("Porcentaje de inmuebles 'Sobrevalorado' vs 'Oportunidad' por mercado.")
+
+        sobrev = (
+            df.groupby("market_token")["estado_inversion"]
+            .apply(lambda x: (x == "Sobrevalorado").mean() * 100).reset_index()
+        )
+        sobrev.columns = ["mercado", "pct_sobre"]
+        oport = (
+            df.groupby("market_token")["estado_inversion"]
+            .apply(lambda x: (x == "Oportunidad").mean() * 100).reset_index()
+        )
+        oport.columns = ["mercado", "pct_oport"]
+        signal_df = sobrev.merge(oport, on="mercado").sort_values("pct_sobre", ascending=False).head(20)
+
+        fig_signal = go.Figure()
+        fig_signal.add_trace(go.Bar(
+            name="Sobrevalorado %",
+            x=signal_df["mercado"].str.replace("_", " ").str.title(),
+            y=signal_df["pct_sobre"], marker_color="#8b2020", opacity=0.85,
+        ))
+        fig_signal.add_trace(go.Bar(
+            name="Oportunidad %",
+            x=signal_df["mercado"].str.replace("_", " ").str.title(),
+            y=signal_df["pct_oport"], marker_color="#1a6b4a", opacity=0.85,
+        ))
+        fig_signal.add_hline(y=40, line=dict(color="#8b2020", width=1, dash="dot"),
+                              annotation_text="Alerta sobrevaluación 40%",
+                              annotation_font=dict(size=9, color="#8b2020", family="DM Mono"))
+        dark_layout(fig_signal, height=340, barmode="group",
+                    legend=dict(orientation="h", y=1.02),
+                    xaxis=dict(tickangle=-35, showgrid=False),
+                    yaxis=dict(title="%", showgrid=True, gridcolor=_GRID))
+        st.plotly_chart(fig_signal, width="stretch")
+
+        st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">Análisis editorial — basado en datos reales</div>',
+                    unsafe_allow_html=True)
+
+        disp_med = df["dispersion_pct_grupo"].median() if "dispersion_pct_grupo" in df.columns else 0
+        pct_sobre = (df["estado_inversion"] == "Sobrevalorado").mean() * 100
+        pct_oport = (df["estado_inversion"] == "Oportunidad").mean() * 100
+        pct_vis = (df["precio_num"] <= 250_000_000).mean() * 100
+
+        mkt_stats = df.groupby("market_token").agg(
+            n=("precio_num", "count"),
+            rent_media=("rentabilidad_potencial", "mean"),
+            pm2_mediana=("precio_m2", "median"),
+        ).reset_index()
+        mkt_stats = mkt_stats[mkt_stats["n"] >= 10]
+        top_liquido = mkt_stats.sort_values("n", ascending=False).head(3)["market_token"].tolist()
+        top_oport = mkt_stats.sort_values("rent_media", ascending=False).head(3)["market_token"].tolist()
+        top_caro = mkt_stats.sort_values("pm2_mediana", ascending=False).head(3)["market_token"].tolist()
+
+        def _mkt_label(tokens):
+            return ", ".join([t.replace("_", " ").title() for t in tokens])
+
+        ea1, ea2 = st.columns(2)
+        with ea1:
+            st.markdown(f"""
 **Mercados más líquidos:** {_mkt_label(top_liquido)}
 concentran la mayor oferta activa. Más opciones = más poder de negociación.
 
@@ -1937,10 +2040,10 @@ muestran la mayor diferencia positiva entre precio modelo y precio publicado
 
 **VIS ({pct_vis:.0f}% de la oferta):** La demanda estructural de vivienda social sigue siendo
 el motor de volumen. Oportunidad para quienes acceden a subsidios.
-        """)
+            """)
 
-    with ea2:
-        st.markdown(f"""
+        with ea2:
+            st.markdown(f"""
 **¿Comprar ahora o esperar?**
 
 Con una dispersión cross-portal promedio de **{disp_med:.1f}%**, existe margen de negociación.
@@ -1952,16 +2055,16 @@ que son oportunidad según el modelo.
 
 **Recomendación:** Para vivienda propia, el mejor momento es cuando el perfil financiero es viable.
 Para inversión, prioriza mercados con señal de oportunidad alta y buena cobertura multiportal.
-        """)
+            """)
 
-    st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
-    st.markdown('<div class="section-label">Consulta sobre el mercado</div>', unsafe_allow_html=True)
-    system_t3 = """Eres un analista de mercado inmobiliario de Real Estate Analyst Colombia.
+        st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">Consulta sobre el mercado</div>', unsafe_allow_html=True)
+        system_t3 = """Eres un analista de mercado inmobiliario de Real Estate Analyst Colombia.
 Respondes preguntas sobre mercados (market_token), ciudades, tendencias de precio, VIS vs No VIS,
 nuevo vs usado, bandas de referencia y señal del modelo.
 Usa la jerarquía mercado → ciudad → zona. Basa tus respuestas en datos reales del contexto.
 Fecha de corte: {fc}.""".format(fc=FECHA_CORTE)
-    render_chat("t3", system_t3, "¿Es buen momento para comprar en Medellín?", df.sample(min(100, len(df))))
+        render_chat("t3", system_t3, "¿Es buen momento para comprar en Medellín?", df.sample(min(100, len(df))))
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1988,11 +2091,21 @@ with tab4:
         v_banos = st.number_input("Baños", min_value=1, max_value=8, value=2)
         v_gar   = st.number_input("Garajes", min_value=0, max_value=5, value=1)
 
-        ciudades_val = sorted(df["city_token"].unique())
+        if df is not None:
+            ciudades_val = sorted(df["city_token"].unique())
+        elif search_meta:
+            ciudades_val = sorted(search_meta.get("cities", []))
+        else:
+            ciudades_val = ["bogota", "medellin", "cali"]
         v_ciudad = st.selectbox("Ciudad", ciudades_val,
                                  index=ciudades_val.index("bogota") if "bogota" in ciudades_val else 0)
         # Derivar mercado automáticamente
-        city_map = _build_city_market_map()
+        if not market_catalog.empty and {"city_token", "market_token"}.issubset(market_catalog.columns):
+            city_map = dict(zip(market_catalog["city_token"], market_catalog["market_token"]))
+        elif df is None:
+            city_map = {}
+        else:
+            city_map = _build_city_market_map()
         v_mercado = city_map.get(v_ciudad, v_ciudad + "_metropolitana")
         st.markdown(
             f'<div style="font-size:.75rem;color:var(--muted);margin-top:-.3rem;margin-bottom:.5rem">'
@@ -2001,8 +2114,8 @@ with tab4:
         )
 
         # ── Granularidad geográfica ──────────────────────────────────
-        df_ciudad = df[df["city_token"] == v_ciudad]
-        if "comuna_mercado" in df.columns:
+        df_ciudad = df[df["city_token"] == v_ciudad] if df is not None else pd.DataFrame()
+        if df is not None and "comuna_mercado" in df.columns:
             comunas_disp = sorted([c for c in df_ciudad["comuna_mercado"].unique() if pd.notna(c) and c != "comuna_otra"])
             v_comuna = st.selectbox("Comuna / Zona", ["comuna_otra"] + comunas_disp)
         else:
@@ -2034,13 +2147,13 @@ with tab4:
 
         if btn_valorar:
             # Carga perezosa del modelo XGBoost bundle solo si se presiona el botón
-            if st.session_state.bundle is None:
+            if not api_mode and st.session_state.bundle is None:
                 with st.spinner("Descargando modelo XGBoost desde S3..."):
                      st.session_state.bundle = load_model_bundle(manifest)
             
             with st.spinner("Ejecutando modelo XGBoost..."):
                 try:
-                    if st.session_state.bundle is None:
+                    if not api_mode and st.session_state.bundle is None:
                         st.error("Modelo no disponible. Verifica conexión a S3.")
                     else:
                         row = {
@@ -2061,7 +2174,9 @@ with tab4:
                             "ubicacion_clean": f"{v_ciudad} {v_comuna} {v_sector}",
                         }
 
-                        result = score_single(row, st.session_state.bundle)
+                        result = api_predict(row) if api_mode else None
+                        if result is None:
+                            result = score_single(row, st.session_state.bundle)
 
                         if "error" in result:
                             st.error(f"Error en valoración: {result['error']}")
@@ -2074,7 +2189,7 @@ with tab4:
                             val_final = valor_pred
                             exp_ia = None
                             
-                            if llm_ready():
+                            if llm_ready() and df is not None:
                                 with st.spinner("IA calculando con comparables de mercado..."):
                                     mask = (df["city_token"] == v_ciudad) & (df["comuna_mercado"] == v_comuna) & (df["tipo_inmueble"] == v_tipo)
                                     df_comp = df[mask]
@@ -2130,7 +2245,7 @@ with tab4:
                             )
                             st.metric("Precio estimado / m²", f"${result['precio_m2_pred']/1e6:.2f}M")
 
-                            local = df[df["city_token"] == v_ciudad]["precio_num"]
+                            local = df[df["city_token"] == v_ciudad]["precio_num"] if df is not None else pd.Series(dtype=float)
                             if not local.empty:
                                 pct = (valor_pred - local.median()) / local.median() * 100
                                 st.metric(
@@ -2140,7 +2255,7 @@ with tab4:
                                 )
 
                             # Comparar con mercado
-                            mkt_local = df[df["market_token"] == v_mercado]["precio_num"]
+                            mkt_local = df[df["market_token"] == v_mercado]["precio_num"] if df is not None else pd.Series(dtype=float)
                             if not mkt_local.empty and v_mercado != v_ciudad + "_metropolitana":
                                 pct_mkt = (valor_pred - mkt_local.median()) / mkt_local.median() * 100
                                 st.metric(

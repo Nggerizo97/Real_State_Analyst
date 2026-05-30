@@ -2,6 +2,7 @@ streamlit
 pandas==2.2.2
 numpy==1.26.4
 boto3
+requests
 joblib
 plotly
 openai

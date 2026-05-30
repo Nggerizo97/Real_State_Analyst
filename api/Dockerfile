@@ -7,6 +7,7 @@ WORKDIR /app
 # Copiar dependencias primero para aprovechar la caché de capas
 COPY api/requirements.txt ./api/requirements.txt
 RUN pip install --no-cache-dir -r api/requirements.txt
+RUN python -c "import duckdb; conn = duckdb.connect(); conn.execute('INSTALL httpfs;')"
 
 # Copiar el código fuente completo (se necesita src/ para scorer.py)
 COPY src/ ./src/

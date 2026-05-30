@@ -40,9 +40,17 @@ class DuckDBManager:
         # Conexión en memoria (los datos viven en S3, no en RAM)
         conn = duckdb.connect(":memory:")
 
-        # En ECS no dependemos de internet saliente para instalar extensiones.
-        # Intentamos cargar httpfs directamente desde la instalación local de duckdb.
-        conn.execute("LOAD httpfs;")
+        try:
+            conn.execute("LOAD httpfs;")
+        except Exception:
+            # Fallback defensivo: intentar instalar en caliente si hay conexión
+            try:
+                conn.execute("INSTALL httpfs;")
+                conn.execute("LOAD httpfs;")
+            except Exception as e:
+                raise RuntimeError(
+                    f"No se pudo cargar ni instalar la extensión httpfs de DuckDB: {e}"
+                )
 
         # Resolver credenciales reales: usar explícitas sólo si existen;
         # de lo contrario boto3 obtiene las temporales del ECS Task Role.

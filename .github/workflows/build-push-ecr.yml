@@ -21,9 +21,12 @@ on:
   workflow_dispatch:    # permite lanzar manualmente desde la UI de GitHub
 
 env:
-  AWS_REGION:          ${{ vars.AWS_REGION }}
+  AWS_REGION:          ${{ secrets.AWS_REGION || vars.AWS_REGION || 'us-east-1' }}
   ECR_REPO_API:        rea-api
   ECR_REPO_STREAMLIT:  rea-streamlit
+  ECS_CLUSTER:         rea-cluster
+  ECS_SERVICE_API:     rea-api
+  ECS_SERVICE_STREAMLIT: rea-streamlit
 
 jobs:
   build-and-push:
@@ -121,7 +124,27 @@ jobs:
           docker push "${IMAGE_URI}:latest"
           echo "✓ Streamlit: ${IMAGE_URI}:${TAG}"
 
-      # ── 8. Resumen de salida ─────────────────────────────────────────────────
+      # ── 8. Forzar redeploy en ECS para que use la imagen nueva ─────────────
+      - name: Force ECS redeploy
+        run: |
+          echo "→ Forzando nuevo deployment en ECS..."
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE_STREAMLIT" \
+            --force-new-deployment \
+            --region "$AWS_REGION" \
+            --no-cli-pager
+          echo "✓ Streamlit ECS redeploy iniciado"
+
+          # Esperar a que el servicio sea estable (max 5 min)
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE_STREAMLIT" \
+            --region "$AWS_REGION" \
+          && echo "✓ rea-streamlit estable" \
+          || echo "⚠ Timeout esperando estabilidad — revisa CloudWatch"
+
+      # ── 9. Resumen de salida ─────────────────────────────────────────────────
       - name: Summary
         env:
           REGISTRY: ${{ steps.vars.outputs.registry }}

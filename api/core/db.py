@@ -11,6 +11,8 @@ Thread-safety: DuckDB usa su propio mutex interno para lecturas simultáneas;
 para escrituras/DDL usamos un Lock explícito.
 """
 import threading
+
+import boto3
 import duckdb
 
 from .config import get_settings
@@ -41,14 +43,23 @@ class DuckDBManager:
         # Instalar / cargar la extensión httpfs (incluida en DuckDB >= 0.8)
         conn.execute("INSTALL httpfs; LOAD httpfs;")
 
-        # Credenciales AWS para httpfs
-        conn.execute(
-            f"""
-            SET s3_region            = '{s.aws_region}';
-            SET s3_access_key_id     = '{s.aws_access_key_id}';
-            SET s3_secret_access_key = '{s.aws_secret_access_key}';
-            """
-        )
+        # Resolver credenciales reales: usar explícitas sólo si existen;
+        # de lo contrario boto3 obtiene las temporales del ECS Task Role.
+        session_kwargs = {"region_name": s.aws_region}
+        if s.aws_access_key_id and s.aws_secret_access_key:
+            session_kwargs["aws_access_key_id"] = s.aws_access_key_id
+            session_kwargs["aws_secret_access_key"] = s.aws_secret_access_key
+
+        creds = boto3.Session(**session_kwargs).get_credentials()
+        if creds is None:
+            raise RuntimeError("No se pudieron resolver credenciales AWS para DuckDB.")
+        frozen = creds.get_frozen_credentials()
+
+        conn.execute(f"SET s3_region = '{s.aws_region}';")
+        conn.execute(f"SET s3_access_key_id = '{frozen.access_key}';")
+        conn.execute(f"SET s3_secret_access_key = '{frozen.secret_key}';")
+        if frozen.token:
+            conn.execute(f"SET s3_session_token = '{frozen.token}';")
 
         bucket = s.s3_bucket
         with self._ddl_lock:

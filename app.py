@@ -129,6 +129,18 @@ def _api_available() -> bool:
     return bool(REA_API_URL) and _requests is not None
 
 
+@st.cache_data(show_spinner=False, ttl=120)
+def api_healthcheck() -> bool:
+    if not _api_available():
+        return False
+    try:
+        resp = _requests.get(f"{REA_API_URL}/health", timeout=5)
+        resp.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
 @st.cache_data(show_spinner=False, ttl=1800)
 def api_search_metadata() -> dict:
     if not _api_available():
@@ -892,7 +904,7 @@ gold_analitica = None
 gold_portales  = None
 
 # Modo API-first: no cargar el Gold completo en memoria si el backend DuckDB está disponible.
-api_mode = _api_available()
+api_mode = api_healthcheck()
 catalog_summary = api_catalog_summary() if api_mode else {}
 market_catalog = api_markets() if api_mode else pd.DataFrame()
 search_meta = api_search_metadata() if api_mode else {}
@@ -1268,7 +1280,7 @@ with tab1:
         gauge_col, metrics_col = st.columns([1, 1])
         with gauge_col:
             cuota_pct = (cuota / capacidad * 100) if capacidad > 0 else 0
-            st.plotly_chart(render_gauge_esfuerzo(cuota_pct), use_container_width=True)
+            st.plotly_chart(render_gauge_esfuerzo(cuota_pct), width="stretch")
         with metrics_col:
             st.metric("Cuota mensual estimada", fmt_cop(cuota))
             st.metric("Presupuesto máx (70%)", f"${monto_max/1e6:.0f}M")
@@ -1389,7 +1401,7 @@ with tab1:
         st.markdown("<br>", unsafe_allow_html=True)
         btn_col1, btn_col2 = st.columns([1, 3])
         with btn_col1:
-            buscar_click = st.button("🔍 Buscar Inmuebles", type="primary", use_container_width=True)
+            buscar_click = st.button("🔍 Buscar Inmuebles", type="primary", width="stretch")
             
         if buscar_click:
             if api_mode:
@@ -1578,7 +1590,7 @@ with tab1:
                     dark_layout(fig_box, height=250,
                                 yaxis=dict(title="Precio/m² (miles COP)", gridcolor=_GRID),
                                 legend=dict(orientation="v", yanchor="middle", y=0.5))
-                    st.plotly_chart(fig_box, use_container_width=True)
+                    st.plotly_chart(fig_box, width="stretch")
 
             # Distribución de señales
             sig_cnt = candidatos["estado_inversion"].value_counts()
@@ -2176,6 +2188,12 @@ with tab4:
 
                         result = api_predict(row) if api_mode else None
                         if result is None:
+                            if st.session_state.bundle is None:
+                                with st.spinner("Descargando modelo XGBoost desde S3..."):
+                                    st.session_state.bundle = load_model_bundle(manifest)
+                            if st.session_state.bundle is None:
+                                st.error("Bundle no disponible. Verifica acceso al modelo en S3.")
+                                st.stop()
                             result = score_single(row, st.session_state.bundle)
 
                         if "error" in result:

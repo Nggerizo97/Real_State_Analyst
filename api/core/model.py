@@ -30,12 +30,12 @@ class ModelRegistry:
     def load(self) -> None:
         """Descarga el bundle champion desde S3 y lo deja en memoria."""
         s = get_settings()
-        client = boto3.client(
-            "s3",
-            aws_access_key_id=s.aws_access_key_id,
-            aws_secret_access_key=s.aws_secret_access_key,
-            region_name=s.aws_region,
-        )
+        client_kwargs = {"region_name": s.aws_region}
+        if s.aws_access_key_id and s.aws_secret_access_key:
+            client_kwargs["aws_access_key_id"] = s.aws_access_key_id
+            client_kwargs["aws_secret_access_key"] = s.aws_secret_access_key
+
+        client = boto3.client("s3", **client_kwargs)
 
         # 1. Manifest → obtener la clave del modelo champion
         manifest_resp = client.get_object(Bucket=s.s3_bucket, Key=s.model_manifest_key)

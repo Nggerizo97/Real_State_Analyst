@@ -602,11 +602,10 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
             cols_to_load = all_cols
         
         # 1. Filtros Pushdown en PyArrow (C++ level)
-        # Usar pa.scalar(float64) para evitar el error de rango en columnas float32:
-        # PyArrow rechaza enteros > 2^24 al inferirlos como int→float32.
-        # pc.cast en expresiones de campo no es soportado por el API de dataset filter.
-        _pm = pa.scalar(float(price_min), type=pa.float64())
-        _pM = pa.scalar(float(price_max), type=pa.float64())
+        # precio_num está almacenado como int64 en el parquet; usar pa.int64() para evitar
+        # el error de conversión float64→float32 (precisión 2^24) para precios > $16M COP.
+        _pm = pa.scalar(int(price_min), type=pa.int64())
+        _pM = pa.scalar(int(price_max), type=pa.int64())
         filter_expr = (pc.field("precio_num") >= _pm) & (pc.field("precio_num") <= _pM)
         if cities:
             # Normalizar nombres de ciudades seleccionadas a minúsculas
@@ -1475,7 +1474,20 @@ with tab1:
     if "tab1_candidates" not in st.session_state:
         candidatos = None
     else:
-        candidatos = st.session_state.tab1_candidates
+        cands_raw = st.session_state.tab1_candidates
+        if cands_raw is not None and not cands_raw.empty:
+            candidatos = cands_raw.copy()
+            if "ubicacion_clean" not in candidatos.columns:
+                if "ubicacion_norm" in candidatos.columns:
+                    candidatos["ubicacion_clean"] = candidatos["ubicacion_norm"]
+                elif "ubicacion_limpia" in candidatos.columns:
+                    candidatos["ubicacion_clean"] = candidatos["ubicacion_limpia"]
+                elif "zona_mercado" in candidatos.columns:
+                    candidatos["ubicacion_clean"] = candidatos["zona_mercado"]
+                else:
+                    candidatos["ubicacion_clean"] = candidatos["city_token"]
+        else:
+            candidatos = cands_raw
 
     # ── Resultados ───────────────────────────────────────────────
     if candidatos is None:
@@ -1499,23 +1511,26 @@ with tab1:
     elif candidatos.empty:
         if api_mode:
             st.error("Sin candidatos para los filtros actuales. Ajusta el rango de precio, mercado o ciudad.")
-            st.info("En modo API-first la búsqueda es on-demand: ejecuta sólo lo que pediste, no carga el catálogo completo en memoria.")
+            st.info("💡 **Consejo de búsqueda:** Al limpiar el bucket de los 6.4 millones de duplicados históricos obsoletos, el catálogo consolidado de hoy cuenta con **7.654 inmuebles activos** concentrados en las ciudades principales (**Bogotá**, **Medellín**, **Cali**, **Barranquilla** y **Pereira**). Si seleccionas una ciudad secundaria o aplicas filtros muy restrictivos, es normal obtener 0 resultados. Prueba seleccionando una de estas ciudades principais o ampliando el rango de precio.")
         else:
-            mask_diag = df["precio_num"].between(*precio_rango)
-            c2 = mask_diag.sum()
-            if mercado_sel: mask_diag &= df["market_token"].isin(mercado_sel)
-            c3 = mask_diag.sum()
-            if tipo_sel: mask_diag &= df["tipo_inmueble"].isin(tipo_sel)
-            c4 = mask_diag.sum()
-            if estado_sel: mask_diag &= df["estado_inmueble"].isin(estado_sel)
-            c5 = mask_diag.sum()
             st.error("Sin candidatos para los filtros actuales. Ajusta el rango de precio, mercado o ciudad.")
-            st.warning(f"🔍 **DIAGNÓSTICO DETALLADO: ¿Por qué hay 0?**\n\n"
-                       f"1. En rango de precio (Toda Colombia): **{c2}**\n"
-                       f"2. En el mercado seleccionado: **{c3}**\n"
-                       f"3. Que sean tipo '{tipo_sel}': **{c4}**\n"
-                       f"4. Que ADEMÁS tengan etiqueta explicita de estado '{estado_sel}': **{c5}**\n\n"
-                       f"👉 Si el paso 4 cae a **0**, significa que los portales inmobiliarios NO etiquetaron correctamente el estado de esos inmuebles (los dejaron vacíos o 'desconocido'). **Quita la 'X' en Estado** para verlos.")
+            if df is not None:
+                mask_diag = df["precio_num"].between(*precio_rango)
+                c2 = mask_diag.sum()
+                if mercado_sel: mask_diag &= df["market_token"].isin(mercado_sel)
+                c3 = mask_diag.sum()
+                if tipo_sel: mask_diag &= df["tipo_inmueble"].isin(tipo_sel)
+                c4 = mask_diag.sum()
+                if estado_sel: mask_diag &= df["estado_inmueble"].isin(estado_sel)
+                c5 = mask_diag.sum()
+                st.warning(f"🔍 **DIAGNÓSTICO DETALLADO: ¿Por qué hay 0?**\n\n"
+                           f"1. En rango de precio (Toda Colombia): **{c2}**\n"
+                           f"2. En el mercado seleccionado: **{c3}**\n"
+                           f"3. Que sean tipo '{tipo_sel}': **{c4}**\n"
+                           f"4. Que ADEMÁS tengan etiqueta explicita de estado '{estado_sel}': **{c5}**\n\n"
+                           f"👉 Si el paso 4 cae a **0**, significa que los portales inmobiliarios NO etiquetaron correctamente el estado de esos inmuebles (los dejaron vacíos o 'desconocido'). **Quita la 'X' en Estado** para verlos.")
+            else:
+                st.info("💡 Prueba ampliando el rango de precio o seleccionando una ciudad diferente.")
         # ---------------------------
     else:
         res_col, chart_col = st.columns([3, 2])

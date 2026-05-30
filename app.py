@@ -511,7 +511,7 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
             analitica_cols = [
                 "analytics_level", "market_token", "city_token",
                 "market_n", "market_quality_score", "precio_m2_mediano",
-                "lower_bound_ref", "upper_bound_ref",
+                "lower_bound_ref", "upper_bound_ref", "precio_mediano", "area_mediana",
             ]
             cols_to_load = [c for c in analitica_cols if c in all_cols]
         elif "portal_operacion" in table_name:
@@ -569,7 +569,7 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
         return None
 
 
-def query_gold_by_filters(cities: list, price_min: float, price_max: float, table_name: str = "app_inmuebles_scored") -> pd.DataFrame:
+def query_gold_by_filters(cities: list, price_min: float, price_max: float, table_name: str = "app_inmuebles_scored", limit: int = 500) -> pd.DataFrame:
     """Descarga de S3 de forma selectiva y ultrarrápida únicamente los registros de las ciudades y precios seleccionados."""
     import gc
     try:
@@ -617,6 +617,10 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
             columns=cols_to_load,
             filter=filter_expr
         )
+        
+        if limit is not None and limit > 0:
+            table = table.slice(length=limit)
+            
         df = table.to_pandas()
         
         # 2. Downcasting y Categorización para liberar RAM local
@@ -900,7 +904,7 @@ manifest = load_manifest()
 # Tablas analíticas diferidas: se cargan en el Tab 1 DESPUÉS de que load_gold()
 # complete y libere su intermedio PyArrow, para que los picos de RAM sean
 # secuenciales (no simultáneos) dentro del límite de 2 GiB del Fargate.
-gold_analitica = None
+gold_analitica = load_mercado_analitica()
 gold_portales  = None
 
 # Modo API-first: no cargar el Gold completo en memoria si el backend DuckDB está disponible.
@@ -909,18 +913,16 @@ catalog_summary = api_catalog_summary() if api_mode else {}
 market_catalog = api_markets() if api_mode else pd.DataFrame()
 search_meta = api_search_metadata() if api_mode else {}
 
-if not api_mode and "master_db" not in st.session_state:
-    st.session_state.master_db = load_gold()
-
 if "bundle" not in st.session_state:
     st.session_state.bundle = None
 
-df = None if api_mode else st.session_state.master_db
+# CARGA LAZY: No inicializa st.session_state.master_db ni carga load_gold() en el arranque
+df = None if api_mode else st.session_state.get("master_db")
 
 curr, peak = tracemalloc.get_traced_memory()
 print(f"[REABOOT] MEMORY AFTER boot: Current {curr/1e6:.1f}MB, Peak {peak/1e6:.1f}MB", flush=True)
 
-# KPIs del boot: API-first si existe backend, fallback al dataframe local sólo cuando sea necesario.
+# KPIs del boot: API-first si existe backend, fallback dinámico a mercado_analitica si df es None (idle)
 if api_mode and catalog_summary:
     N = int(catalog_summary.get("total_inmuebles", 101106))
     N_PORTALES = int(catalog_summary.get("n_portales", 7))
@@ -931,14 +933,37 @@ if api_mode and catalog_summary:
     MED_M2 = float(catalog_summary.get("med_precio_m2", 5150000.0))
     N_OPT = int(catalog_summary.get("n_oportunidades", 2022))
 else:
-    N          = len(df) if df is not None and not df.empty else 101106
-    N_PORTALES = int(df["fuente"].nunique()) if df is not None and "fuente" in df.columns else 7
-    PORTALES_SANOS = N_PORTALES
-    N_MERCADOS = int(df["market_token"].nunique()) if df is not None and "market_token" in df.columns else 25
-    N_CIUDADES = int(df["city_token"].nunique())   if df is not None and "city_token" in df.columns else 133
-    MED_PRECIO = float(df["precio_num"].median()) if df is not None and not df.empty else 585000000.0
-    MED_M2     = float(df["precio_m2"].median())  if df is not None and "precio_m2" in df.columns and not df.empty else 5150000.0
-    N_OPT      = int((df["estado_inversion"] == "Oportunidad").sum()) if df is not None and "estado_inversion" in df.columns else 2022
+    if df is not None and not df.empty:
+        # Calcular sobre la búsqueda activa del usuario
+        N          = len(df)
+        N_PORTALES = int(df["fuente"].nunique()) if "fuente" in df.columns else 7
+        PORTALES_SANOS = N_PORTALES
+        N_MERCADOS = int(df["market_token"].nunique()) if "market_token" in df.columns else 25
+        N_CIUDADES = int(df["city_token"].nunique())   if "city_token" in df.columns else 133
+        MED_PRECIO = float(df["precio_num"].median())
+        MED_M2     = float(df["precio_m2"].median())  if "precio_m2" in df.columns else 5150000.0
+        N_OPT      = int((df["estado_inversion"] == "Oportunidad").sum()) if "estado_inversion" in df.columns else 2022
+    elif gold_analitica is not None and not gold_analitica.empty:
+        # MODO LAZY IDLE: Agregación rápida en memoria usando mercado_analitica (pre-agregada ligera de S3)
+        city_rows = gold_analitica[gold_analitica["analytics_level"] == "city"]
+        N = int(city_rows["market_n"].sum()) if "market_n" in city_rows.columns else 101106
+        N_PORTALES = 7
+        PORTALES_SANOS = N_PORTALES
+        N_MERCADOS = int(city_rows["market_token"].nunique()) if "market_token" in city_rows.columns else 25
+        N_CIUDADES = int(city_rows["city_token"].nunique()) if "city_token" in city_rows.columns else 133
+        MED_PRECIO = float(city_rows["precio_mediano"].median()) if "precio_mediano" in city_rows.columns else 585000000.0
+        MED_M2     = float(city_rows["precio_m2_mediano"].median()) if "precio_m2_mediano" in city_rows.columns else 5150000.0
+        N_OPT      = 2022
+    else:
+        # Defaults absolutos preventivos
+        N          = 101106
+        N_PORTALES = 7
+        PORTALES_SANOS = N_PORTALES
+        N_MERCADOS = 25
+        N_CIUDADES = 133
+        MED_PRECIO = 585000000.0
+        MED_M2     = 5150000.0
+        N_OPT      = 2022
 
 MAPE_BADGE = manifest.get("metrics", {}).get("mape", "20.9%")
 DEPLOYED = (
@@ -1404,57 +1429,53 @@ with tab1:
             buscar_click = st.button("🔍 Buscar Inmuebles", type="primary", width="stretch")
             
         if buscar_click:
+            num_portales_min = 2 if only_multiportal else None
             if api_mode:
-                estado_api = estado_sel[0] if len(estado_sel) == 1 else None
-                tipo_api = tipo_sel[0] if len(tipo_sel) == 1 else None
-                num_portales_min = 2 if only_multiportal else None
-                st.session_state.tab1_candidates = api_search(
+                cands_df = api_search(
                     cities=ciudad_sel,
-                    markets=mercado_sel if not ciudad_sel else None,
                     price_min=precio_rango[0],
                     price_max=precio_rango[1],
-                    tipo_inmueble=tipo_api,
-                    estado_inmueble=estado_api,
-                    habitaciones_min=habs_min,
+                    markets=mercado_sel,
+                    tipo_inmueble=tipo_sel[0] if tipo_sel else None,
+                    estado_inmueble=estado_sel[0] if estado_sel else None,
+                    habitaciones_min=habs_min if habs_min > 0 else None,
                     num_portales_min=num_portales_min,
                     limit=200,
                 )
-            elif st.session_state.get("master_db") is None:
-                st.session_state.master_db = load_gold()
+            else:
+                # MODO S3-DIRECTO LAZY Y OPTIMIZADO: Consulta PyArrow con filtros pushdown y límite estricto de 500
+                cands_df = query_gold_by_filters(
+                    cities=ciudad_sel,
+                    price_min=precio_rango[0],
+                    price_max=precio_rango[1],
+                    limit=500,
+                )
+                if cands_df is not None and not cands_df.empty:
+                    # Enriquecer métricas si no vienen del Lakehouse pre-costeado
+                    if "score_inversion" not in cands_df.columns:
+                        cands_df = _clean_gold(cands_df)
+                    
+                    # Aplicar segregaciones locales en Pandas en memoria sobre el subset controlado de 500
+                    if tipo_sel:
+                        cands_df = cands_df[cands_df["tipo_inmueble"].isin(tipo_sel)]
+                    if estado_sel:
+                        cands_df = cands_df[cands_df["estado_inmueble"].isin(estado_sel)]
+                    if habs_min > 0 and "habitaciones" in cands_df.columns:
+                        cands_df = cands_df[cands_df["habitaciones"].fillna(0) >= habs_min]
+                    if only_multiportal and "num_portales" in cands_df.columns:
+                        cands_df = cands_df[cands_df["num_portales"].fillna(0) > 1]
+                    
+                    cands_df = cands_df.sort_values("rentabilidad_potencial", ascending=False).head(25)
+                else:
+                    cands_df = pd.DataFrame()
+            st.session_state.tab1_candidates = cands_df
             st.rerun()
 
     # ── Obtención de candidatos ──────────────────────────────────
-    if api_mode:
-        if "tab1_candidates" not in st.session_state:
-            candidatos = None
-        else:
-            candidatos = st.session_state.tab1_candidates
+    if "tab1_candidates" not in st.session_state:
+        candidatos = None
     else:
-        if df is None or df.empty:
-            st.info("⏳ Cargando datos desde S3... Si persiste, recarga la página.")
-            st.stop()
-
-        mask = (df["precio_num"].between(*precio_rango))
-        if mercado_sel:
-            mask &= df["market_token"].isin(mercado_sel)
-        if ciudad_sel:
-            ciudad_sel_lower = [str(c).lower().strip() for c in ciudad_sel]
-            mask &= df["city_token"].isin(ciudad_sel_lower)
-        if 'comuna_sel' in locals() and comuna_sel:
-            mask &= df["comuna_mercado"].isin(comuna_sel)
-        if 'sector_sel' in locals() and sector_sel:
-            mask &= df["sector_mercado"].isin(sector_sel)
-        if tipo_sel:
-            mask &= df["tipo_inmueble"].isin(tipo_sel)
-        if estado_sel:
-            mask &= df["estado_inmueble"].isin(estado_sel)
-        if "habitaciones" in df.columns:
-            mask &= df["habitaciones"].fillna(0) >= habs_min
-        if only_multiportal and "num_portales" in df.columns:
-            mask &= df["num_portales"].fillna(0) > 1
-
-        candidatos = df[mask].sort_values("rentabilidad_potencial", ascending=False).head(25)
-        st.session_state.tab1_candidates = candidatos
+        candidatos = st.session_state.tab1_candidates
 
     # ── Resultados ───────────────────────────────────────────────
     if candidatos is None:
@@ -1646,7 +1667,7 @@ Reglas de comunicacion:
 3. Lenguaje Ciudadano: Usa "Costo financiero" en lugar de "Tasa EA", "Capacidad de pago" en lugar de "Tasa de esfuerzo".
 4. Accionable: Siempre termina con un paso a seguir concreto: Te sugiero filtrar por inmuebles en el sector Z donde el precio m2 es menor a $X."""
 
-    render_chat("t1", system_t1, "¿Cuál candidato me conviene más?", candidatos if not candidatos.empty else None)
+    render_chat("t1", system_t1, "¿Cuál candidato me conviene más?", candidatos if (candidatos is not None and not candidatos.empty) else None)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1657,6 +1678,8 @@ with tab2:
     st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
 
     cands = st.session_state.get("tab1_candidates", pd.DataFrame())
+    if cands is None:
+        cands = pd.DataFrame()
 
     if cands.empty:
         st.info("Primero configura tu búsqueda en **Asesor Inmobiliario** para ver el análisis de inversión.")
@@ -1867,7 +1890,7 @@ with tab2:
 Ayudas a decidir qué inmueble comprar considerando: mercado (market_token), ciudad, señal del modelo,
 inteligencia cross-portal, market_quality_score y perspectivas regionales.
 Usa la jerarquía mercado → ciudad → zona. Cita datos concretos. Fecha de corte: {fc}.""".format(fc=FECHA_CORTE)
-    render_chat("t2", system_t2, "¿Cuál mercado tiene mejor perspectiva?", cands if not cands.empty else (df.head(20) if df is not None else None))
+    render_chat("t2", system_t2, "¿Cuál mercado tiene mejor perspectiva?", cands if (cands is not None and not cands.empty) else (df.head(20) if df is not None else None))
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1877,13 +1900,34 @@ with tab3:
     st.markdown("## Dashboard — Inteligencia de mercado Colombia")
     st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
 
-    if api_mode and df is None:
-        # --- MODO API-FIRST: RENDERIZAR CHARTS CON DATOS AGREGADOS ---
-        st.markdown('<div class="section-label">Inteligencia de mercado — Vista Agregada API-First</div>', unsafe_allow_html=True)
+    if df is None:
+        # --- MODO LAZY (API o Local sin búsqueda cargada): RENDERIZAR CHARTS CON DATOS AGREGADOS ---
+        st.markdown('<div class="section-label">Inteligencia de mercado — Vista Agregada</div>', unsafe_allow_html=True)
         
-        if market_catalog.empty:
-            st.warning("Los datos agregados del catálogo de mercados no están disponibles a través de la API.")
+        if api_mode:
+            catalog = market_catalog
         else:
+            # Construir sobre la marcha usando mercado_analitica de S3 (local/lazy)
+            ma = load_mercado_analitica()
+            if ma is not None and not ma.empty:
+                # Filtrar y agrupar tal como lo hace la API
+                ma_city = ma[(ma["analytics_level"] == "city") & (ma["market_token"].notna())].copy()
+                for c in ["market_n", "precio_mediano", "precio_m2_mediano", "area_mediana"]:
+                    if c in ma_city.columns:
+                        ma_city[c] = pd.to_numeric(ma_city[c], errors="coerce")
+                catalog = ma_city.groupby(["market_token", "city_token"]).agg(
+                    n_inmuebles=("market_n", "sum"),
+                    precio_mediano=("precio_mediano", "median"),
+                    precio_m2_mediano=("precio_m2_mediano", "median"),
+                    area_mediana=("area_mediana", "median")
+                ).reset_index().sort_values("n_inmuebles", ascending=False)
+            else:
+                catalog = pd.DataFrame()
+
+        if catalog.empty:
+            st.warning("Los datos agregados del catálogo de mercados no están disponibles.")
+        else:
+            market_catalog = catalog
             # 1. Distribución de Ofertas y Precio Mediano
             v1, v2 = st.columns(2)
             with v1:

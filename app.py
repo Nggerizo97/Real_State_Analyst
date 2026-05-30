@@ -588,7 +588,7 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
         
         if "app_inmuebles" in table_name:
             ui_cols = [
-                "id_original", "city_token", "market_token", "ubicacion_clean", "ubicacion_norm",
+                "id_original", "city_token", "market_token", "ubicacion_limpia", "ubicacion_norm", "ubicacion_raw",
                 "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
                 "fuente", "url", "titulo", "rentabilidad_potencial", "estado_inversion", "comuna_mercado", "sector_mercado",
                 "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2",
@@ -633,7 +633,18 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
         for col in float32_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
-                
+
+        # Alias ubicacion_limpia → ubicacion_clean para compatibilidad con el UI
+        if "ubicacion_clean" not in df.columns:
+            if "ubicacion_limpia" in df.columns:
+                df["ubicacion_clean"] = df["ubicacion_limpia"]
+            elif "ubicacion_norm" in df.columns:
+                df["ubicacion_clean"] = df["ubicacion_norm"]
+            elif "ubicacion_raw" in df.columns:
+                df["ubicacion_clean"] = df["ubicacion_raw"]
+            else:
+                df["ubicacion_clean"] = "Desconocida"
+
         # Supervivencia estricta para matar duplicados del Lakehouse
         if "id_original" in df.columns:
             df = df.drop_duplicates(subset=["id_original"], keep="last")

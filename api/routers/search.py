@@ -4,6 +4,7 @@ api/routers/search.py
 POST /search          → Búsqueda paginada de inmuebles en Gold Parquet (DuckDB)
 GET  /search/metadata → Listas de valores únicos para filtros del frontend
 """
+import math
 import re
 from typing import List
 
@@ -139,7 +140,19 @@ def search(req: SearchRequest) -> SearchResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Error consultando datos: {exc}") from exc
 
-    items = [PropertyItem(**row) for row in rows_df.to_dict(orient="records")]
+    # Sanitizar NaN / ±Inf → None antes de pasar a Pydantic/JSON
+    # Python json.dumps rechaza float('nan') e float('inf') por spec JSON
+    def _safe_val(v):
+        if v is None:
+            return None
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        return v
+
+    items = [
+        PropertyItem(**{k: _safe_val(v) for k, v in row.items()})
+        for row in rows_df.to_dict(orient="records")
+    ]
 
     return SearchResponse(
         total=total,

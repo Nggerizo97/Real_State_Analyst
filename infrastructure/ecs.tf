@@ -87,6 +87,24 @@ resource "aws_iam_role_policy_attachment" "ecs_exec_managed" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# Permiso adicional: leer el secreto de Streamlit desde Secrets Manager.
+# Solo se crea cuando se pasa el ARN (via TF_VAR_streamlit_secrets_arn).
+resource "aws_iam_role_policy" "ecs_exec_secrets" {
+  count = var.streamlit_secrets_arn != "" ? 1 : 0
+
+  name = "rea-ecs-exec-read-streamlit-secret"
+  role = aws_iam_role.ecs_exec_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "secretsmanager:GetSecretValue"
+      Resource = var.streamlit_secrets_arn
+    }]
+  })
+}
+
 # ── IAM: Task Role ────────────────────────────────────────────────────────────
 # Permisos que usa la APP en runtime. Principio de mínimo privilegio:
 #   • S3: sólo lectura sobre el bucket bronce-scrap-date (Gold Parquet + modelo)

@@ -422,16 +422,16 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
         all_cols = dataset.schema.names
 
         if "app_inmuebles" in table_name:
+            # Projection mínima necesaria para renderizar la UI sin cargar todo el schema.
+            # El objetivo es que el boot de Streamlit no convierta a pandas columnas que
+            # sólo se usan en cálculos opcionales o se pueden recomputar en _clean_gold().
             ui_cols = [
-                "id_original", "id_inmueble", "city_token", "market_token", "ubicacion_norm", "ubicacion_raw", "ubicacion_clean",
-                "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
-                "fuente", "url", "titulo", "rentabilidad_potencial", "estado_inversion", "comuna_mercado", "sector_mercado",
-                "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2",
-                # Columnas analíticas adicionales
-                "precio_predicho", "data_completeness", "zona_mercado", "fecha_extraccion",
-                "precio_desviacion_grupo_pct", "precio_m2_vs_mediana_pct", "percentil_precio_ciudad",
-                "score_inversion", "descuento_potencial_cop", "cuota_mensual_est",
-                "first_seen_date", "precio_cambio_pct",
+                "city_token", "market_token", "ubicacion_clean", "ubicacion_norm",
+                "precio_num", "area_m2", "habitaciones", "tipo_inmueble", "estado_inmueble",
+                "fuente", "url", "titulo", "rentabilidad_potencial", "estado_inversion",
+                "comuna_mercado", "sector_mercado", "num_portales", "dispersion_pct_grupo",
+                "precio_min_grupo", "precio_max_grupo", "precio_m2", "precio_predicho",
+                "score_inversion", "first_seen_date", "precio_cambio_pct",
             ]
             cols_to_load = [c for c in ui_cols if c in all_cols]
         elif "mercado_analitica" in table_name:
@@ -451,7 +451,11 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
         print(f"[REABOOT] Extrayendo {len(cols_to_load)} de {len(all_cols)} columnas...", flush=True)
         
         table = dataset.to_table(columns=cols_to_load)
-        df = table.to_pandas()
+        df = table.to_pandas(
+            strings_to_categorical=True,
+            split_blocks=True,
+            self_destruct=True,
+        )
         
         # --- OPTIMIZACIONES DE MEMORIA EN EL DATAFRAME ---
         # 1. Categorización de strings repetitivos de alta cardinalidad/baja cardinalidad repetitiva
@@ -477,6 +481,8 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
             df = df.drop_duplicates(subset=["id_original"], keep="last")
         elif "id_inmueble" in df.columns:
             df = df.drop_duplicates(subset=["id_inmueble"], keep="last")
+        elif "url" in df.columns:
+            df = df.drop_duplicates(subset=["url"], keep="last")
             
         print(f"[REABOOT] EXITO S3: {table_name} descargado en {time.time()-t0:.2f}s. Shape RAM final: {df.shape}", flush=True)
         

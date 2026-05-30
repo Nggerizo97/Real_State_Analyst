@@ -54,8 +54,9 @@ def predict(req: PredictRequest) -> PredictResponse:
     if "error" in result:
         raise HTTPException(status_code=422, detail=result["error"])
 
-    return PredictResponse(
-        **result,
-        mape_pct=result.get("mape_pct", model_registry.mape),
-        model_key=model_registry.model_key,
-    )
+    if "mape_pct" not in result:
+        result["mape_pct"] = model_registry.mape
+    if "model_key" not in result:
+        result["model_key"] = model_registry.model_key
+
+    return PredictResponse(**result)

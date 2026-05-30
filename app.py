@@ -1425,7 +1425,10 @@ with tab1:
 
     # ── Obtención de candidatos ──────────────────────────────────
     if api_mode:
-        candidatos = st.session_state.get("tab1_candidates", pd.DataFrame())
+        if "tab1_candidates" not in st.session_state:
+            candidatos = None
+        else:
+            candidatos = st.session_state.tab1_candidates
     else:
         if df is None or df.empty:
             st.info("⏳ Cargando datos desde S3... Si persiste, recarga la página.")
@@ -1454,7 +1457,25 @@ with tab1:
         st.session_state.tab1_candidates = candidatos
 
     # ── Resultados ───────────────────────────────────────────────
-    if candidatos.empty:
+    if candidatos is None:
+        st.markdown(
+            """
+            <div style="background-color: var(--surface); border: 1px solid var(--border); padding: 2.5rem; border-radius: 8px; margin-top: 1.5rem; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                <div style="font-size: 3rem; margin-bottom: 1.2rem;">🔍</div>
+                <h3 style="color: white; margin-bottom: 0.8rem; font-family: 'Playfair Display', serif; font-size: 1.5rem;">Buscador Inteligente de Inmuebles</h3>
+                <p style="color: var(--muted); font-size: 0.95rem; max-width: 600px; margin: 0 auto 1.8rem; line-height: 1.6;">
+                    Bienvenido a la búsqueda bajo demanda (On-Demand). Para optimizar la memoria y velocidad,
+                    selecciona una <b>Ciudad</b> o <b>Mercado</b> en la barra lateral, configura tu presupuesto en los filtros,
+                    y presiona el botón <b>"🔍 Buscar Inmuebles"</b> para consultar los datos en tiempo real a través de nuestra API.
+                </p>
+                <div style="display: inline-block; background-color: rgba(184, 147, 90, 0.1); border: 1px solid #b8935a; padding: 0.6rem 1.2rem; border-radius: 4px; color: #b8935a; font-size: 0.85rem; font-weight: bold; letter-spacing: 0.05em; text-transform: uppercase;">
+                    Listo para Consultar
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    elif candidatos.empty:
         if api_mode:
             st.error("Sin candidatos para los filtros actuales. Ajusta el rango de precio, mercado o ciudad.")
             st.info("En modo API-first la búsqueda es on-demand: ejecuta sólo lo que pediste, no carga el catálogo completo en memoria.")
@@ -1857,7 +1878,93 @@ with tab3:
     st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
 
     if api_mode and df is None:
-        st.info("Dashboard agregado deshabilitado en modo API-first para evitar cargar el catálogo completo en RAM. El Buscador y la Valoración siguen operando on-demand vía DuckDB.")
+        # --- MODO API-FIRST: RENDERIZAR CHARTS CON DATOS AGREGADOS ---
+        st.markdown('<div class="section-label">Inteligencia de mercado — Vista Agregada API-First</div>', unsafe_allow_html=True)
+        
+        if market_catalog.empty:
+            st.warning("Los datos agregados del catálogo de mercados no están disponibles a través de la API.")
+        else:
+            # 1. Distribución de Ofertas y Precio Mediano
+            v1, v2 = st.columns(2)
+            with v1:
+                # Pie Chart: Ofertas por Mercado
+                fig_vis = go.Figure(go.Pie(
+                    labels=market_catalog["market_token"].str.replace("_", " ").str.title(),
+                    values=market_catalog["n_inmuebles"],
+                    hole=0.5,
+                    marker=dict(colors=["#1a6b4a", "#1a4a8b", "#b8935a", "#8b2020", "#4b208b", "#208b8b", "#8b5a2b", "#b8860b"], line=dict(color="white", width=2)),
+                    textfont=dict(family="DM Sans", size=12),
+                ))
+                dark_layout(fig_vis, height=320,
+                            title=dict(text="Distribución de Ofertas por Mercado", font=dict(family="Playfair Display", size=14, color=_TEXT)),
+                            legend=dict(orientation="h", y=-0.15))
+                st.plotly_chart(fig_vis, width="stretch")
+                
+            with v2:
+                # Bar Chart: Precio Mediano por Mercado
+                fig_med = go.Figure(go.Bar(
+                    x=market_catalog["market_token"].str.replace("_", " ").str.title(),
+                    y=market_catalog["precio_mediano"] / 1e6,
+                    marker=dict(color=market_catalog["precio_mediano"], colorscale=[[0, "#dfc69f"], [1, "#b8935a"]], showscale=False),
+                    text=(market_catalog["precio_mediano"] / 1e6).apply(lambda x: f"${x:.0f}M"),
+                    textposition="outside",
+                ))
+                dark_layout(fig_med, height=320,
+                            title=dict(text="Precio Mediano por Mercado", font=dict(family="Playfair Display", size=14, color=_TEXT)),
+                            xaxis=dict(tickangle=-35, showgrid=False),
+                            yaxis=dict(title="M COP", showgrid=True, gridcolor=_GRID))
+                st.plotly_chart(fig_med, width="stretch")
+
+            st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+
+            # 2. Precio por m² por mercado
+            st.markdown('<div class="section-label">Eficiencia de compra — precio por m² por mercado</div>', unsafe_allow_html=True)
+            st.caption("Mercados con menor precio/m² ofrecen más área por peso invertido.")
+            
+            fig_m2bar = go.Figure(go.Bar(
+                x=market_catalog["market_token"].str.replace("_", " ").str.title(),
+                y=market_catalog["precio_m2_mediano"] / 1e6,
+                marker=dict(color=market_catalog["precio_m2_mediano"],
+                            colorscale=[[0, "#e8f4ef"], [1, "#0a3d28"]], showscale=False),
+                text=(market_catalog["precio_m2_mediano"] / 1e6).apply(lambda x: f"${x:.2f}M"),
+                textposition="outside",
+            ))
+            dark_layout(fig_m2bar, height=360,
+                        xaxis=dict(tickangle=-35, showgrid=False),
+                        yaxis=dict(title="M COP / m²", showgrid=True, gridcolor=_GRID))
+            st.plotly_chart(fig_m2bar, width="stretch")
+
+            st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
+
+            # 3. Bandas de referencia de mercado_analitica
+            if gold_analitica is None:
+                gold_analitica = load_mercado_analitica()
+            if gold_analitica is not None and "lower_bound_ref" in gold_analitica.columns:
+                st.markdown('<div class="section-label">Bandas de precio por mercado (mercado_analitica)</div>',
+                            unsafe_allow_html=True)
+                st.caption("Precio/m² mediano con bandas lower/upper — útil para evaluar si un inmueble está dentro del rango justo.")
+
+                mkt_bands = gold_analitica[gold_analitica["analytics_level"] == "market"][
+                    ["market_token", "market_n", "precio_m2_mediano", "lower_bound_ref",
+                     "upper_bound_ref", "market_quality_score"]
+                ].sort_values("market_n", ascending=False).head(15).copy()
+                mkt_bands["market_label"] = mkt_bands["market_token"].str.replace("_", " ").str.title()
+
+                st.dataframe(
+                    mkt_bands[["market_label", "market_n", "precio_m2_mediano", "lower_bound_ref",
+                                "upper_bound_ref", "market_quality_score"]].rename(columns={
+                        "market_label": "Mercado", "market_n": "Ofertas",
+                        "precio_m2_mediano": "Precio/m² Med.", "lower_bound_ref": "Banda baja",
+                        "upper_bound_ref": "Banda alta", "market_quality_score": "Quality",
+                    }).style.format({
+                        "Precio/m² Med.": lambda x: f"${int(x):,}".replace(",", "."),
+                        "Banda baja": lambda x: f"${int(x):,}".replace(",", "."),
+                        "Banda alta": lambda x: f"${int(x):,}".replace(",", "."),
+                        "Quality": "{:.0f}",
+                    }),
+                    width="stretch", hide_index=True,
+                )
+                st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
     else:
         # ── Segmentación ─────────────────────────────────────────────
         st.markdown('<div class="section-label">Segmentación del mercado</div>', unsafe_allow_html=True)

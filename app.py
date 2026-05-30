@@ -733,7 +733,8 @@ print(f"[REABOOT] MEMORY AFTER ALL Caches: Current {curr/1e6:.1f}MB, Peak {peak/
 
 # Inicializar base de datos del usuario en sesión
 if "master_db" not in st.session_state:
-    st.session_state.master_db = None
+    # Carga automática al arranque — @st.cache_data lo cachea entre reruns
+    st.session_state.master_db = load_gold()
 
 if "bundle" not in st.session_state:
     st.session_state.bundle = None
@@ -1212,20 +1213,15 @@ with tab1:
             buscar_click = st.button("🔍 Buscar Inmuebles", type="primary", use_container_width=True)
             
         if buscar_click:
-            with st.spinner("Descargando análisis en tiempo real desde S3..."):
-                # Si no se seleccionó ninguna ciudad, podemos pasar una lista vacía para traer todas en el rango
-                df_loaded = query_gold_by_filters(ciudad_sel, precio_rango[0], precio_rango[1])
-                if df_loaded is not None and not df_loaded.empty:
-                    st.session_state.master_db = df_loaded
-                    st.success("¡Datos cargados con éxito!")
-                    st.rerun()
-                else:
-                    st.error("No se encontraron inmuebles que coincidan con los criterios seleccionados en S3.")
+            # df ya está en session_state desde el arranque — solo hacer rerun
+            # para que el bloque de filtrado de más abajo aplique los valores actuales
+            if st.session_state.get("master_db") is None:
+                st.session_state.master_db = load_gold()
+            st.rerun()
 
     # ── Control de Flujo Defensivo (Si no hay datos cargados en sesión) ──
-    if df is None:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.info("👋 **¡Bienvenido a Real Estate Analyst!** Selecciona al menos una Ciudad de interés en los filtros de arriba y haz clic en **🔍 Buscar Inmuebles** para descargar el análisis interactivo de oportunidades en tiempo real desde S3.")
+    if df is None or df.empty:
+        st.info("⏳ Cargando datos desde S3... Si persiste, recarga la página.")
         st.stop()
 
     # ── Filtrado ─────────────────────────────────────────────────

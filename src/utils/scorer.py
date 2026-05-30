@@ -40,7 +40,7 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
             df_pred[col] = df_pred[col].fillna(default).astype(str)
 
         df_pred["log_area_m2"] = np.log1p(df_pred["area_m2"].clip(lower=0))
-        df_pred["hab_bucket"] = df_pred["habitaciones"].fillna(-1).clip(-1, 6)
+        df_pred["habitaciones_bucket"] = df_pred["habitaciones"].fillna(-1).clip(-1, 6)
         df_pred["market_segment"] = df_pred["city_token"] + "__" + df_pred["tipo_inmueble"]
         df_pred["micro_market_segment"] = df_pred["market_segment"] + "__" + df_pred["comuna_mercado"]
         df_pred["sector_market_segment"] = df_pred["market_segment"] + "__" + df_pred["sector_mercado"]
@@ -51,7 +51,7 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
         if segment_stats is not None: df_pred = df_pred.merge(segment_stats, on="market_segment", how="left")
         if micro_stats is not None: df_pred = df_pred.merge(micro_stats, on="micro_market_segment", how="left")
         if sector_stats is not None: df_pred = df_pred.merge(sector_stats, on="sector_market_segment", how="left")
-        if hab_stats is not None: df_pred = df_pred.merge(hab_stats, on=["city_token","hab_bucket"], how="left")
+        if hab_stats is not None: df_pred = df_pred.merge(hab_stats, on=["city_token","habitaciones_bucket"], how="left")
         if fuente_ratio_stats is not None: df_pred = df_pred.merge(fuente_ratio_stats, on="fuente", how="left")
         if fuente_segmento_ratio_stats is not None: df_pred = df_pred.merge(fuente_segmento_ratio_stats, on=["fuente","market_segment"], how="left")
 
@@ -110,13 +110,9 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
         preprocessor_blob = bundle.get("preprocessor_pickle")
         if preprocessor_blob:
             try:
-                import base64
-                # Manejar formato Base64 (común en bundles JSON) o raw bytes
+                # El bundle JSON almacena el pickle codificado en latin1
                 if isinstance(preprocessor_blob, str):
-                    try:
-                        preprocessor_blob = base64.b64decode(preprocessor_blob)
-                    except:
-                        preprocessor_blob = preprocessor_blob.encode('latin1')
+                    preprocessor_blob = preprocessor_blob.encode('latin1')
                 preprocessor = pickle.loads(preprocessor_blob)
             except Exception as e:
                 unpickle_error = str(e)

@@ -51,15 +51,9 @@ def search(req: SearchRequest) -> SearchResponse:
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"DuckDB no disponible: {exc}") from exc
 
-    select_cols = ", ".join(
-        [f"CAST({c} AS VARCHAR) AS {c}" if c == "id" else c]
-        if c == "id" else
-        [c if c in available_cols else f"NULL AS {c}"]
-        for c in _ITEM_COLS
-    )
-    # Simplificar: usar * y solo los campos que existen
+    # Columnas a seleccionar con casting de seguridad para el campo id
     col_list = ", ".join(
-        c if c in available_cols else f"NULL AS {c}"
+        (f"CAST({c} AS VARCHAR) AS {c}" if c == "id" else c) if c in available_cols else f"NULL AS {c}"
         for c in _ITEM_COLS
     )
 

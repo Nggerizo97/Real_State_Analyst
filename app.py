@@ -691,8 +691,12 @@ def _clean_gold(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
 
     # ── Columnas analíticas derivadas (calculadas en memoria, siempre presentes) ────────
-    # Días en mercado desde fecha_extraccion
-    if "fecha_extraccion" in df.columns:
+    # Días en mercado — preferir first_seen_date (dedup pipeline) sobre fecha_extraccion (último scrape)
+    if "first_seen_date" in df.columns and df["first_seen_date"].notna().any():
+        df["dias_en_mercado"] = (
+            pd.Timestamp.now() - pd.to_datetime(df["first_seen_date"], errors="coerce")
+        ).dt.days.clip(0, 730).astype("float32")
+    elif "fecha_extraccion" in df.columns:
         df["dias_en_mercado"] = (
             pd.Timestamp.now() - pd.to_datetime(df["fecha_extraccion"], errors="coerce")
         ).dt.days.clip(0, 730).astype("float32")
@@ -738,6 +742,12 @@ def _clean_gold(df: pd.DataFrame) -> pd.DataFrame:
             df["descuento_potencial_cop"] = np.float32(0)
     else:
         df["descuento_potencial_cop"] = pd.to_numeric(df["descuento_potencial_cop"], errors="coerce").astype("float32")
+
+    # precio_cambio_pct — evolución de precio desde primera aparición (dedup pipeline)
+    if "precio_cambio_pct" not in df.columns:
+        df["precio_cambio_pct"] = np.float32(0)
+    else:
+        df["precio_cambio_pct"] = pd.to_numeric(df["precio_cambio_pct"], errors="coerce").fillna(0).astype("float32")
 
     import gc
     gc.collect()
@@ -833,9 +843,9 @@ else:
     N_MERCADOS = 25
     N_CIUDADES = 133
 
-MED_PRECIO = 585000000.0  # Mediana oficial DANE de la base de datos
-MED_M2     = 5150000.0
-N_OPT      = 2022        # Estimado global de oportunidades en Colombia
+MED_PRECIO = float(df["precio_num"].median()) if df is not None and not df.empty else 585000000.0
+MED_M2     = float(df["precio_m2"].median())  if df is not None and "precio_m2" in df.columns and not df.empty else 5150000.0
+N_OPT      = int((df["estado_inversion"] == "Oportunidad").sum()) if df is not None and "estado_inversion" in df.columns else 2022
 
 MAPE_BADGE = manifest.get("metrics", {}).get("mape", "20.9%")
 DEPLOYED = (
@@ -1361,6 +1371,9 @@ with tab1:
                 "habitaciones": "Hab.",
                 "precio_predicho": "Precio modelo",
                 "rentabilidad_potencial": "Señal %",
+                "score_inversion": "Score",
+                "precio_cambio_pct": "Δ Precio",
+                "dias_en_mercado": "Días",
                 "estado_inversion": "Señal",
                 "num_portales": "Portales",
             }
@@ -1372,9 +1385,12 @@ with tab1:
                     df_show[col] = df_show[col].str.replace("_", " ").str.title()
 
             fmt = {}
-            if "Precio" in df_show.columns:       fmt["Precio"]        = lambda x: f"${int(x):,}".replace(",", ".")
+            if "Precio" in df_show.columns:        fmt["Precio"]        = lambda x: f"${int(x):,}".replace(",", ".")
             if "Precio modelo" in df_show.columns: fmt["Precio modelo"] = lambda x: f"${int(x):,}".replace(",", ".")
             if "Señal %" in df_show.columns:       fmt["Señal %"]       = "{:+.1f}%"
+            if "Score" in df_show.columns:         fmt["Score"]         = "{:.0f}"
+            if "Δ Precio" in df_show.columns:      fmt["Δ Precio"]      = "{:+.1f}%"
+            if "Días" in df_show.columns:          fmt["Días"]          = "{:.0f}"
             if "m²" in df_show.columns:            fmt["m²"]            = "{:.0f}"
             if "Portales" in df_show.columns:      fmt["Portales"]      = "{:.0f}"
 

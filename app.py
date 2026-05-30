@@ -417,6 +417,11 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
             secret=aws_config.get("aws_secret_access_key") or None
         )
         s3_path = f"{bucket}/gold/{table_name}/"
+
+        dataset = ds.dataset(s3_path, filesystem=fs, format="parquet")
+        all_cols = dataset.schema.names
+
+        if "app_inmuebles" in table_name:
             ui_cols = [
                 "id_original", "id_inmueble", "city_token", "market_token", "ubicacion_norm", "ubicacion_raw", "ubicacion_clean",
                 "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
@@ -481,13 +486,15 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
         all_cols = dataset.schema.names
         
         if "app_inmuebles" in table_name:
-        ui_cols = [
-            "id_original", "city_token", "market_token", "ubicacion_clean",
-            "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
-            "fuente", "url", "titulo", "rentabilidad_potencial", "estado_inversion", "comuna_mercado", "sector_mercado",
-            "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2"
-        ]
-        cols_to_load = [c for c in ui_cols if c in all_cols]
+            ui_cols = [
+                "id_original", "city_token", "market_token", "ubicacion_clean",
+                "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
+                "fuente", "url", "titulo", "rentabilidad_potencial", "estado_inversion", "comuna_mercado", "sector_mercado",
+                "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2"
+            ]
+            cols_to_load = [c for c in ui_cols if c in all_cols]
+        else:
+            cols_to_load = all_cols
         
         # 1. Filtros Pushdown en PyArrow (C++ level)
         # Usar pa.scalar(float64) para evitar el error de rango en columnas float32:
@@ -974,12 +981,89 @@ REGLAS CRÍTICAS:
 
 
 # ══════════════════════════════════════════════════════════════════
+# HELPERS UI — gauge y link gallery
+# ══════════════════════════════════════════════════════════════════
+
+def render_gauge_esfuerzo(cuota_pct: float):
+    """Gauge de tasa de esfuerzo financiero. Verde <30%, Amarillo 30-40%, Rojo >40%."""
+    color = "#1a6b4a" if cuota_pct <= 30 else "#b8935a" if cuota_pct <= 40 else "#8b2020"
+    estado = "Ideal ✓" if cuota_pct <= 30 else "Alerta ⚠" if cuota_pct <= 40 else "Alto Riesgo ✗"
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=cuota_pct,
+        number={"suffix": "%", "font": {"family": "DM Sans", "size": 26, "color": _TEXT}},
+        gauge={
+            "axis": {
+                "range": [0, 60],
+                "tickwidth": 1, "tickcolor": _MUTED_TEXT,
+                "tickvals": [0, 15, 30, 40, 60],
+                "tickfont": {"color": _MUTED_TEXT, "size": 9},
+            },
+            "bar": {"color": color, "thickness": 0.28},
+            "bgcolor": _PLOT,
+            "borderwidth": 0,
+            "steps": [
+                {"range": [0, 30], "color": "rgba(26,107,74,.18)"},
+                {"range": [30, 40], "color": "rgba(184,147,90,.18)"},
+                {"range": [40, 60], "color": "rgba(139,32,32,.18)"},
+            ],
+            "threshold": {"line": {"color": "#fff", "width": 2}, "thickness": 0.75, "value": cuota_pct},
+        },
+        title={
+            "text": f"Tasa de Esfuerzo<br><span style='font-size:.85em;color:{color}'>{estado}</span>",
+            "font": {"family": "DM Sans", "size": 13, "color": _TEXT},
+        },
+    ))
+    fig.update_layout(
+        paper_bgcolor=_BG, plot_bgcolor=_BG,
+        font=dict(family="DM Sans", color=_TEXT),
+        height=240, margin=dict(l=20, r=20, t=40, b=10),
+    )
+    return fig
+
+
+def render_link_gallery(candidatos: pd.DataFrame):
+    """Grid 3 columnas con tarjetas de inmueble y link directo al portal."""
+    top = candidatos.head(6)
+    if top.empty:
+        return
+    st.markdown('<div class="section-label">Mejores Oportunidades — Acceso directo</div>',
+                unsafe_allow_html=True)
+    cols = st.columns(3)
+    for i, (_, row) in enumerate(top.iterrows()):
+        col = cols[i % 3]
+        titulo = str(row.get("titulo", "Propiedad"))
+        titulo_short = titulo[:35] + "\u2026" if len(titulo) > 35 else titulo
+        precio = int(row.get("precio_num", 0))
+        precio_str = f"${precio:,}".replace(",", ".")
+        ubicacion = str(row.get("ubicacion_clean", ""))
+        fuente = str(row.get("fuente", "portal")).replace("_", " ").title()
+        url = str(row.get("url", "#"))
+        signal = float(row.get("rentabilidad_potencial", 0))
+        signal_color = "#1a6b4a" if signal > 0 else "#8b2020"
+        arrow = "\u25b2" if signal > 0 else "\u25bc"
+        col.markdown(
+            f'<div style="background:var(--surface2);border:1px solid var(--border);'
+            f'padding:.9rem;border-radius:6px;margin-bottom:.7rem">'
+            f'<div style="font-size:.72rem;font-weight:600;color:var(--ink);margin-bottom:.25rem">{titulo_short}</div>'
+            f'<div style="font-size:.95rem;font-weight:700;color:var(--gold)">{precio_str}</div>'
+            f'<div style="font-size:.68rem;color:var(--muted);margin:.15rem 0">{ubicacion}</div>'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-top:.45rem">'
+            f'<span style="font-size:.7rem;color:{signal_color};font-weight:600">{arrow} {signal:+.1f}%</span>'
+            f'<a href="{url}" target="_blank" style="font-size:.68rem;color:var(--gold);'
+            f'text-decoration:none;font-weight:600">Ver en {fuente} \u2192</a>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ══════════════════════════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4 = st.tabs([
-    "Asesor Inmobiliario",
-    "Asesor de Inversión",
-    "Visión de Compra",
+tab3, tab1, tab2, tab4 = st.tabs([
+    "Dashboard",
+    "Buscador Inteligente",
+    "Simulador Financiero",
     "Valoración  ⚒",
 ])
 
@@ -988,7 +1072,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # TAB 1 — ASESOR INMOBILIARIO
 # ══════════════════════════════════════════════════════════════════
 with tab1:
-    st.markdown("## Encuentra tu inmueble ideal")
+    st.markdown("## Buscador Inteligente")
     st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
 
     # ── Perfil financiero ────────────────────────────────────────
@@ -1014,11 +1098,15 @@ with tab1:
         monto_max = prestamo / 0.7
         viable = cuota <= capacidad
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Cuota mensual estimada", fmt_cop(cuota))
-        m2.metric("Presupuesto máx (70%)", f"${monto_max/1e6:.0f}M")
-        m3.metric("Interés total (20 años)", f"${(cuota*plazo - prestamo)/1e6:.0f}M")
-        m4.metric("Viabilidad", "✓ Viable" if viable else "✗ Excede capacidad")
+        gauge_col, metrics_col = st.columns([1, 1])
+        with gauge_col:
+            cuota_pct = (cuota / capacidad * 100) if capacidad > 0 else 0
+            st.plotly_chart(render_gauge_esfuerzo(cuota_pct), use_container_width=True)
+        with metrics_col:
+            st.metric("Cuota mensual estimada", fmt_cop(cuota))
+            st.metric("Presupuesto máx (70%)", f"${monto_max/1e6:.0f}M")
+            st.metric("Interés total (20 años)", f"${(cuota*plazo - prestamo)/1e6:.0f}M")
+            st.metric("Viabilidad", "✓ Viable" if viable else "✗ Excede capacidad")
 
         if not viable:
             deficit = cuota - capacidad
@@ -1268,6 +1356,33 @@ with tab1:
                         yaxis=dict(title="Precio (M COP)", gridcolor=_GRID))
             st.plotly_chart(fig, width="stretch")
 
+            # Boxplot: Precio/m² candidatos vs mercado
+            if "precio_m2" in candidatos.columns and "city_token" in candidatos.columns:
+                st.markdown('<div class="section-label">Precio/m² — candidatos vs mercado</div>',
+                            unsafe_allow_html=True)
+                ciudades_box = [c for c in candidatos["city_token"].unique()[:3] if pd.notna(c)]
+                fig_box = go.Figure()
+                for ciu in ciudades_box:
+                    df_mkt = df[df["city_token"] == ciu]["precio_m2"].dropna() if df is not None else pd.Series(dtype=float)
+                    df_cnd = candidatos[candidatos["city_token"] == ciu]["precio_m2"].dropna()
+                    if len(df_mkt) > 5:
+                        fig_box.add_trace(go.Box(
+                            y=df_mkt / 1e3,
+                            name=str(ciu).replace("_", " ").title() + " (mercado)",
+                            marker_color="#b8935a", opacity=0.65, boxmean="sd",
+                        ))
+                    if not df_cnd.empty:
+                        fig_box.add_trace(go.Box(
+                            y=df_cnd / 1e3,
+                            name=str(ciu).replace("_", " ").title() + " (selección)",
+                            marker_color="#1a6b4a",
+                        ))
+                if len(fig_box.data) > 0:
+                    dark_layout(fig_box, height=250,
+                                yaxis=dict(title="Precio/m² (miles COP)", gridcolor=_GRID),
+                                legend=dict(orientation="v", yanchor="middle", y=0.5))
+                    st.plotly_chart(fig_box, use_container_width=True)
+
             # Distribución de señales
             sig_cnt = candidatos["estado_inversion"].value_counts()
             fig2 = go.Figure(go.Pie(
@@ -1284,16 +1399,22 @@ with tab1:
                                           font=dict(size=16, family="Playfair Display"))])
             st.plotly_chart(fig2, width="stretch")
 
+        # Galería de acceso directo a oportunidades
+        render_link_gallery(candidatos)
+
     # ── Chat ─────────────────────────────────────────────────────
     st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
     st.markdown('<div class="section-label">Consulta al asesor financiero</div>',
+
                 unsafe_allow_html=True)
 
-    system_t1 = """Eres un asesor financiero inmobiliario de Real Estate Analyst Colombia.
-Tu rol es ayudar al usuario a encontrar el inmueble que mejor se ajuste a su perfil de crédito.
-Analiza los candidatos del contexto y da recomendaciones concretas: mercado, ciudad, zona, precio, área, señal del modelo.
-Usa la jerarquía: mercado (market_token) → ciudad (city_token) → zona (ubicación).
-Si el perfil financiero no alcanza, da recomendaciones específicas para mejorar su capacidad de compra."""
+    system_t1 = """Eres un experto en inteligencia financiera e inmobiliaria en Colombia. Tu objetivo es educar al usuario.
+
+Reglas de comunicacion:
+1. Interpretacion de Credito: Si el usuario tiene capacidad limitada, no le digas solo "no es viable". Explicale la tasa de esfuerzo y como cada 1% adicional en la tasa de interes afecta su cuota mensual a 20 anos.
+2. Contexto de Inmueble: Si el inmueble es una "Oportunidad" (rentabilidad > 0%), justifica por que: Este precio esta un X% por debajo del promedio del sector Y, lo que protege tu inversion contra fluctuaciones de mercado.
+3. Lenguaje Ciudadano: Usa "Costo financiero" en lugar de "Tasa EA", "Capacidad de pago" en lugar de "Tasa de esfuerzo".
+4. Accionable: Siempre termina con un paso a seguir concreto: Te sugiero filtrar por inmuebles en el sector Z donde el precio m2 es menor a $X."""
 
     render_chat("t1", system_t1, "¿Cuál candidato me conviene más?", candidatos if not candidatos.empty else None)
 
@@ -1302,7 +1423,7 @@ Si el perfil financiero no alcanza, da recomendaciones específicas para mejorar
 # TAB 2 — ASESOR DE INVERSIÓN
 # ══════════════════════════════════════════════════════════════════
 with tab2:
-    st.markdown("## Asesor de inversión")
+    st.markdown("## Simulador Financiero")
     st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
 
     cands = st.session_state.get("tab1_candidates", pd.DataFrame())
@@ -1512,7 +1633,7 @@ Usa la jerarquía mercado → ciudad → zona. Cita datos concretos. Fecha de co
 # TAB 3 — VISIÓN DE COMPRA
 # ══════════════════════════════════════════════════════════════════
 with tab3:
-    st.markdown("## Inteligencia de mercado Colombia")
+    st.markdown("## Dashboard — Inteligencia de mercado Colombia")
     st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
 
     # ── Segmentación ─────────────────────────────────────────────

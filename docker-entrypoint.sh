@@ -12,6 +12,7 @@ set -e
 mkdir -p /app/.streamlit /root/.streamlit
 
 if [ -n "$STREAMLIT_SECRETS_JSON" ]; then
+    echo "DEBUG entrypoint: STREAMLIT_SECRETS_JSON recibido (longitud=$(echo -n "$STREAMLIT_SECRETS_JSON" | wc -c) chars)" >&2
     # Convertir JSON a TOML usando Python (disponible en la imagen base)
     python3 - <<'PY'
 import json, os, sys

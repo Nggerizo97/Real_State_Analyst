@@ -434,6 +434,18 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
                 "first_seen_date", "precio_cambio_pct",
             ]
             cols_to_load = [c for c in ui_cols if c in all_cols]
+        elif "mercado_analitica" in table_name:
+            analitica_cols = [
+                "analytics_level", "market_token", "city_token",
+                "market_n", "market_quality_score", "precio_m2_mediano",
+                "lower_bound_ref", "upper_bound_ref",
+            ]
+            cols_to_load = [c for c in analitica_cols if c in all_cols]
+        elif "portal_operacion" in table_name:
+            portal_cols = [
+                "portal", "portal_ofertas_activas", "checkpoint_status", "gold_snapshot_at",
+            ]
+            cols_to_load = [c for c in portal_cols if c in all_cols]
         else:
             cols_to_load = all_cols
         print(f"[REABOOT] Extrayendo {len(cols_to_load)} de {len(all_cols)} columnas...", flush=True)
@@ -556,7 +568,7 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
         return None
 
 
-@st.cache_data(show_spinner="Cargando portafolio...", ttl=3600)
+@st.cache_resource(show_spinner="Cargando portafolio...", ttl=3600)
 def load_gold():
     """Lee Gold consumable + enriquece con market_token desde mercado_analitica."""
     try:
@@ -574,22 +586,22 @@ def load_gold():
         return _dummy_df()
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_resource(show_spinner=False, ttl=3600)
 def load_mercado_analitica():
     return _s3_read_gold("mercado_analitica")
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_resource(show_spinner=False, ttl=3600)
 def load_mercado_sectorial():
     return _s3_read_gold("mercado_sectorial")
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_resource(show_spinner=False, ttl=3600)
 def load_portal_operacion():
     return _s3_read_gold("portal_operacion")
 
 
-@st.cache_data(show_spinner=False, ttl=7200)
+@st.cache_resource(show_spinner=False, ttl=7200)
 def _build_city_market_map() -> dict:
     """Extrae mapeo city_token → market_token de mercado_analitica."""
     ma = load_mercado_analitica()
@@ -807,7 +819,6 @@ tracemalloc.start()
 
 manifest = load_manifest()
 gold_analitica = load_mercado_analitica()
-gold_sectorial = load_mercado_sectorial()
 gold_portales  = load_portal_operacion()
 if gold_portales is not None and not gold_portales.empty and "gold_snapshot_at" in gold_portales.columns:
     latest_snapshot = gold_portales["gold_snapshot_at"].max()

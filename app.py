@@ -426,7 +426,12 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
                 "id_original", "id_inmueble", "city_token", "market_token", "ubicacion_norm", "ubicacion_raw", "ubicacion_clean",
                 "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
                 "fuente", "url", "titulo", "rentabilidad_potencial", "estado_inversion", "comuna_mercado", "sector_mercado",
-                "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2"
+                "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2",
+                # Columnas analíticas adicionales
+                "precio_predicho", "data_completeness", "zona_mercado", "fecha_extraccion",
+                "precio_desviacion_grupo_pct", "precio_m2_vs_mediana_pct", "percentil_precio_ciudad",
+                "score_inversion", "descuento_potencial_cop", "cuota_mensual_est",
+                "first_seen_date", "precio_cambio_pct",
             ]
             cols_to_load = [c for c in ui_cols if c in all_cols]
         else:
@@ -438,14 +443,19 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
         
         # --- OPTIMIZACIONES DE MEMORIA EN EL DATAFRAME ---
         # 1. Categorización de strings repetitivos de alta cardinalidad/baja cardinalidad repetitiva
-        categorical_cols = ["city_token", "market_token", "tipo_inmueble", "estado_inmueble", "fuente", "estado_inversion", "comuna_mercado"]
+        categorical_cols = ["city_token", "market_token", "tipo_inmueble", "estado_inmueble", "fuente", "estado_inversion", "comuna_mercado", "zona_mercado"]
         for col in categorical_cols:
             if col in df.columns:
                 df[col] = df[col].astype("category")
                 
         # 2. Downcasting de variables numéricas a 32 bits
-        float32_cols = ["precio_num", "area_m2", "habitaciones", "banos", "garajes", "num_portales", "precio_m2",
-                        "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "rentabilidad_potencial"]
+        float32_cols = [
+            "precio_num", "area_m2", "habitaciones", "banos", "garajes", "num_portales", "precio_m2",
+            "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo",
+            "rentabilidad_potencial", "precio_predicho", "data_completeness", "precio_desviacion_grupo_pct",
+            "precio_m2_vs_mediana_pct", "percentil_precio_ciudad", "score_inversion",
+            "descuento_potencial_cop", "cuota_mensual_est", "precio_cambio_pct",
+        ]
         for col in float32_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
@@ -487,10 +497,14 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
         
         if "app_inmuebles" in table_name:
             ui_cols = [
-                "id_original", "city_token", "market_token", "ubicacion_clean",
+                "id_original", "city_token", "market_token", "ubicacion_clean", "ubicacion_norm",
                 "precio_num", "area_m2", "habitaciones", "banos", "garajes", "tipo_inmueble", "estado_inmueble",
                 "fuente", "url", "titulo", "rentabilidad_potencial", "estado_inversion", "comuna_mercado", "sector_mercado",
-                "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2"
+                "num_portales", "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "precio_m2",
+                "precio_predicho", "data_completeness", "zona_mercado", "fecha_extraccion",
+                "precio_desviacion_grupo_pct", "precio_m2_vs_mediana_pct", "percentil_precio_ciudad",
+                "score_inversion", "descuento_potencial_cop", "cuota_mensual_est",
+                "first_seen_date", "precio_cambio_pct",
             ]
             cols_to_load = [c for c in ui_cols if c in all_cols]
         else:
@@ -662,16 +676,68 @@ def _clean_gold(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = np.nan
 
     # --- RE-APLICAR OPTIMIZACIONES DE MEMORIA Y TIPOS DE DATOS ---
-    categorical_cols = ["city_token", "market_token", "tipo_inmueble", "estado_inmueble", "fuente", "estado_inversion", "comuna_mercado", "sector_mercado"]
+    categorical_cols = ["city_token", "market_token", "tipo_inmueble", "estado_inmueble", "fuente", "estado_inversion", "comuna_mercado", "sector_mercado", "zona_mercado"]
     for col in categorical_cols:
         if col in df.columns:
             df[col] = df[col].fillna("desconocido").astype("category")
             
-    float32_cols = ["precio_num", "area_m2", "habitaciones", "banos", "garajes", "num_portales", "precio_m2",
-                    "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo", "rentabilidad_potencial"]
+    float32_cols = [
+        "precio_num", "area_m2", "habitaciones", "banos", "garajes", "num_portales", "precio_m2",
+        "dispersion_pct_grupo", "precio_mediano_grupo", "precio_min_grupo", "precio_max_grupo",
+        "rentabilidad_potencial", "precio_predicho", "data_completeness", "precio_desviacion_grupo_pct",
+    ]
     for col in float32_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
+
+    # ── Columnas analíticas derivadas (calculadas en memoria, siempre presentes) ────────
+    # Días en mercado desde fecha_extraccion
+    if "fecha_extraccion" in df.columns:
+        df["dias_en_mercado"] = (
+            pd.Timestamp.now() - pd.to_datetime(df["fecha_extraccion"], errors="coerce")
+        ).dt.days.clip(0, 730).astype("float32")
+    elif "dias_en_mercado" not in df.columns:
+        df["dias_en_mercado"] = np.float32(30)
+
+    # Percentil de precio/m² dentro de la ciudad (0 = más barato, 100 = más caro)
+    if "city_token" in df.columns and "precio_m2" in df.columns and "percentil_precio_ciudad" not in df.columns:
+        df["percentil_precio_ciudad"] = (
+            df.groupby("city_token")["precio_m2"].rank(pct=True) * 100
+        ).round(1).astype("float32")
+    elif "percentil_precio_ciudad" not in df.columns:
+        df["percentil_precio_ciudad"] = np.float32(50)
+    else:
+        df["percentil_precio_ciudad"] = pd.to_numeric(df["percentil_precio_ciudad"], errors="coerce").astype("float32")
+
+    # Score inversión 0-100: rentabilidad (50%) + completitud (30%) + consistencia de precio (20%)
+    if "score_inversion" not in df.columns:
+        _has_inputs = all(c in df.columns for c in ["rentabilidad_potencial", "data_completeness", "dispersion_pct_grupo"])
+        if _has_inputs:
+            _rent = (df["rentabilidad_potencial"].fillna(0).clip(-50, 50) + 50) / 100
+            _comp = df["data_completeness"].fillna(0.5).clip(0, 1)
+            _cons = 1 - df["dispersion_pct_grupo"].fillna(0).clip(0, 100) / 100
+            df["score_inversion"] = (_rent * 0.50 + _comp * 0.30 + _cons * 0.20).mul(100).round(1).astype("float32")
+        else:
+            df["score_inversion"] = np.float32(50)
+    else:
+        df["score_inversion"] = pd.to_numeric(df["score_inversion"], errors="coerce").astype("float32")
+
+    # Cuota mensual hipotecaria estimada (30 años, tasa 14% EA ≈ 1.098%/mes, financiación 70%)
+    if "cuota_mensual_est" not in df.columns:
+        _tm, _n = 0.01098, 360
+        _fc = (_tm * (1 + _tm) ** _n) / ((1 + _tm) ** _n - 1)
+        df["cuota_mensual_est"] = (df["precio_num"] * 0.70 * _fc).round(-3).astype("float32")
+    else:
+        df["cuota_mensual_est"] = pd.to_numeric(df["cuota_mensual_est"], errors="coerce").astype("float32")
+
+    # Descuento potencial absoluto COP (precio modelo − precio real)
+    if "descuento_potencial_cop" not in df.columns:
+        if "precio_predicho" in df.columns:
+            df["descuento_potencial_cop"] = (df["precio_predicho"] - df["precio_num"]).astype("float32")
+        else:
+            df["descuento_potencial_cop"] = np.float32(0)
+    else:
+        df["descuento_potencial_cop"] = pd.to_numeric(df["descuento_potencial_cop"], errors="coerce").astype("float32")
 
     import gc
     gc.collect()
@@ -709,6 +775,15 @@ def _dummy_df() -> pd.DataFrame:
         "precio_min_grupo": np.random.randint(120, 1800, n) * 1_000_000.0,
         "precio_max_grupo": np.random.randint(180, 2200, n) * 1_000_000.0,
         "precio_m2": np.random.uniform(3e6, 12e6, n),
+        # Columnas analíticas en demo
+        "precio_predicho": np.random.randint(150, 2000, n) * 1_000_000.0,
+        "rentabilidad_potencial": np.random.uniform(-30, 40, n),
+        "estado_inversion": np.random.choice(["Oportunidad", "En mercado", "Sobrevalorado"], n, p=[0.25, 0.55, 0.20]),
+        "data_completeness": np.random.uniform(0.4, 1.0, n),
+        "fecha_extraccion": pd.date_range(end=pd.Timestamp.now(), periods=n, freq="-1D"),
+        "zona_mercado": np.random.choice(["norte", "sur", "oriente", "occidente", "centro"], n),
+        "precio_desviacion_grupo_pct": np.random.uniform(-15, 15, n),
+        "precio_cambio_pct": np.random.uniform(-8, 2, n),
     })
 
 

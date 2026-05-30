@@ -254,14 +254,12 @@ resource "aws_ecs_task_definition" "rea_api" {
   requires_compatibilities = ["FARGATE"]
 
   # ┌─────────────────────────────────────────────────────────────────────┐
-  # │ TAMAÑO ÓPTIMO                                                       │
-  # │  • 256 CPU (0.25 vCPU): suficiente para FastAPI + DuckDB query SQL  │
-  # │    DuckDB hace el filtrado en C++ antes de bajar datos de S3.        │
-  # │  • 1024 MB (1 GiB): mínimo para cargar bundle XGBoost + DuckDB     │
-  # │    Si en el futuro el bundle supera 300 MB, sube a 2048 MB.         │
+  # │ TAMAÑO ROBUSTO                                                      │
+  # │  • 512 CPU: reduce latencia de warmup para modelo + DuckDB.         │
+  # │  • 2048 MB: evita OOM durante startup (bundle + DuckDB + uvicorn). │
   # └─────────────────────────────────────────────────────────────────────┘
-  cpu    = "256"
-  memory = "1024"
+  cpu    = "512"
+  memory = "2048"
 
   execution_role_arn = aws_iam_role.ecs_exec_role.arn
   task_role_arn      = aws_iam_role.ecs_task_role.arn

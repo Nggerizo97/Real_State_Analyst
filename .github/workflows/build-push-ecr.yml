@@ -127,7 +127,16 @@ jobs:
       # ── 8. Forzar redeploy en ECS para que use la imagen nueva ─────────────
       - name: Force ECS redeploy
         run: |
-          echo "→ Forzando nuevo deployment en ECS..."
+          echo "→ Forzando nuevo deployment en ECS (API + Streamlit)..."
+
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE_API" \
+            --force-new-deployment \
+            --region "$AWS_REGION" \
+            --no-cli-pager
+          echo "✓ API ECS redeploy iniciado"
+
           aws ecs update-service \
             --cluster "$ECS_CLUSTER" \
             --service "$ECS_SERVICE_STREAMLIT" \
@@ -136,12 +145,12 @@ jobs:
             --no-cli-pager
           echo "✓ Streamlit ECS redeploy iniciado"
 
-          # Esperar a que el servicio sea estable (max 5 min)
+          # Esperar a que ambos servicios estén estables (max 5 min)
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
-            --services "$ECS_SERVICE_STREAMLIT" \
+            --services "$ECS_SERVICE_API" "$ECS_SERVICE_STREAMLIT" \
             --region "$AWS_REGION" \
-          && echo "✓ rea-streamlit estable" \
+          && echo "✓ rea-api y rea-streamlit estables" \
           || echo "⚠ Timeout esperando estabilidad — revisa CloudWatch"
 
       # ── 9. Resumen de salida ─────────────────────────────────────────────────

@@ -20,12 +20,12 @@ def list_markets():
         SELECT
             market_token,
             city_token,
-            COUNT(*)                           AS n_inmuebles,
-            MEDIAN(precio_num)                 AS precio_mediano,
-            MEDIAN(precio_num / NULLIF(area_m2, 0)) AS precio_m2_mediano,
-            MEDIAN(area_m2)                    AS area_mediana
-        FROM inmuebles
-        WHERE precio_num > 0
+            CAST(SUM(market_n) AS INTEGER)     AS n_inmuebles,
+            MEDIAN(precio_mediano)             AS precio_mediano,
+            MEDIAN(precio_m2_mediano)          AS precio_m2_mediano,
+            MEDIAN(area_mediana)               AS area_mediana
+        FROM mercado_analitica
+        WHERE analytics_level = 'city'
           AND market_token IS NOT NULL
         GROUP BY market_token, city_token
         ORDER BY n_inmuebles DESC
@@ -47,12 +47,12 @@ def get_market(
         SELECT
             market_token,
             city_token,
-            COUNT(*)                           AS n_inmuebles,
-            MEDIAN(precio_num)                 AS precio_mediano,
-            MEDIAN(precio_num / NULLIF(area_m2, 0)) AS precio_m2_mediano,
-            MEDIAN(area_m2)                    AS area_mediana
-        FROM inmuebles
-        WHERE precio_num > 0
+            CAST(SUM(market_n) AS INTEGER)     AS n_inmuebles,
+            MEDIAN(precio_mediano)             AS precio_mediano,
+            MEDIAN(precio_m2_mediano)          AS precio_m2_mediano,
+            MEDIAN(area_mediana)               AS area_mediana
+        FROM mercado_analitica
+        WHERE analytics_level = 'city'
           AND market_token = ?
         GROUP BY market_token, city_token
         LIMIT 1

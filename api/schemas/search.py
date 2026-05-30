@@ -4,7 +4,8 @@ api/schemas/search.py
 Modelos Pydantic para /search y /markets.
 """
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+import pandas as pd
+from pydantic import BaseModel, Field, field_validator
 
 
 class SearchRequest(BaseModel):
@@ -68,6 +69,20 @@ class PropertyItem(BaseModel):
     precio_cambio_pct: Optional[float] = None
     url: Optional[str] = None
     extra: Optional[Dict[str, Any]] = None
+
+    @field_validator("first_seen_date", mode="before")
+    @classmethod
+    def coerce_nat_to_none(cls, v):
+        """DuckDB/pandas puede devolver NaT para fechas nulas; Pydantic no lo acepta como str."""
+        if v is None:
+            return None
+        # pandas NaT y numpy NaN
+        try:
+            if pd.isna(v):
+                return None
+        except (TypeError, ValueError):
+            pass
+        return str(v) if not isinstance(v, str) else v
 
 
 class SearchResponse(BaseModel):

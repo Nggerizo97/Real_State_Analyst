@@ -51,9 +51,14 @@ def search(req: SearchRequest) -> SearchResponse:
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"DuckDB no disponible: {exc}") from exc
 
-    # Columnas a seleccionar con casting de seguridad para el campo id
+    # Columnas a seleccionar con casting de seguridad
+    # - id → VARCHAR (puede ser int64 en Parquet)
+    # - first_seen_date → VARCHAR (puede ser DATE/TIMESTAMP y llegar como NaT a pandas)
+    _DATE_COLS = {"first_seen_date"}
     col_list = ", ".join(
-        (f"CAST({c} AS VARCHAR) AS {c}" if c == "id" else c) if c in available_cols else f"NULL AS {c}"
+        (f"CAST({c} AS VARCHAR) AS {c}" if (c == "id" or c in _DATE_COLS) else c)
+        if c in available_cols
+        else f"NULL AS {c}"
         for c in _ITEM_COLS
     )
 

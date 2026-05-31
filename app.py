@@ -427,21 +427,30 @@ def load_model_bundle(manifest=None):
         # Detección automática de formato (JSON Bundle vs Pickle)
         if raw_data.startswith(b"{"):
             import xgboost as xgb
+            import tempfile
             bundle = json.loads(raw_data)
-            
-            # Si el bundle tiene el modelo como string/dict JSON, lo cargamos en XGBRegressor
+
+            # Formato v8: booster nativo en "model_json" + preprocessor en "preprocessor_pickle"
+            if "model_json" in bundle:
+                bst = xgb.Booster()
+                model_json_data = bundle["model_json"]
+                if isinstance(model_json_data, str):
+                    model_json_bytes = model_json_data.encode("utf-8")
+                else:
+                    model_json_bytes = model_json_data
+                bst.load_model(bytearray(model_json_bytes))
+                bundle["model"] = bst  # scorer usa bundle["model"] como fallback
+                return bundle
+
+            # Formato legacy: modelo completo en "model" como string/dict JSON
             if "model" in bundle and isinstance(bundle["model"], (str, dict)):
                 model_json = bundle["model"]
                 if isinstance(model_json, dict):
                     model_json = json.dumps(model_json)
-                
                 reg = xgb.XGBRegressor()
-                # Crear un archivo temporal para cargar (XGBRegressor.load_model prefiere archivos)
-                import tempfile
                 with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tf:
                     tf.write(model_json)
                     temp_path = tf.name
-                
                 reg.load_model(temp_path)
                 os.remove(temp_path)
                 bundle["model"] = reg

@@ -13,15 +13,21 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
         df["estado_inversion"] = "Sin modelo"
         return df
 
+    def _to_df(v):
+        """Convierte list-of-dicts (formato JSON bundle) a DataFrame; pasa DataFrames sin cambio."""
+        if v is None: return None
+        if isinstance(v, list): return pd.DataFrame(v) if v else None
+        return v
+
     strategy = bundle.get("strategy", "absolute")
-    city_stats = bundle.get("city_stats")
-    comuna_stats = bundle.get("comuna_stats")
-    segment_stats = bundle.get("segment_stats")
-    micro_stats = bundle.get("micro_stats")
-    sector_stats = bundle.get("sector_stats")
-    fuente_ratio_stats = bundle.get("fuente_ratio_stats")
-    fuente_segmento_ratio_stats = bundle.get("fuente_segmento_ratio_stats")
-    hab_stats = bundle.get("hab_stats")
+    city_stats = _to_df(bundle.get("city_stats"))
+    comuna_stats = _to_df(bundle.get("comuna_stats"))
+    segment_stats = _to_df(bundle.get("segment_stats"))
+    micro_stats = _to_df(bundle.get("micro_stats"))
+    sector_stats = _to_df(bundle.get("sector_stats"))
+    fuente_ratio_stats = _to_df(bundle.get("fuente_ratio_stats"))
+    fuente_segmento_ratio_stats = _to_df(bundle.get("fuente_segmento_ratio_stats"))
+    hab_stats = _to_df(bundle.get("hab_stats"))
     market_meta = bundle.get("market_meta", {})
 
     try:

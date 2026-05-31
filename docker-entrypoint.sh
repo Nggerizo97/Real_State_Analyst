@@ -62,6 +62,23 @@ fi
 # Symlink por si Streamlit busca también en /root/.streamlit/
 ln -sf /app/.streamlit/secrets.toml /root/.streamlit/secrets.toml 2>/dev/null || true
 
+# ── Cloudflare DDNS ──────────────────────────────────────────────────────────
+# Actualiza el registro A de app.realestateanalyst.co con la IP pública
+# asignada dinámicamente por Fargate al arrancar el contenedor.
+if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ] && [ -n "$CF_RECORD_ID" ]; then
+    PUBLIC_IP=$(curl -sf https://api.ipify.org)
+    echo "[DDNS] IP pública detectada en Fargate: $PUBLIC_IP" >&2
+    echo "[DDNS] Actualizando registro DNS en Cloudflare..." >&2
+    curl -s -S -X PUT "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$CF_RECORD_ID" \
+         -H "Authorization: Bearer $CF_API_TOKEN" \
+         -H "Content-Type: application/json" \
+         -d "{\"type\":\"A\",\"name\":\"app\",\"content\":\"$PUBLIC_IP\",\"ttl\":120,\"proxied\":true}" > /dev/null
+    echo "[DDNS] Cloudflare actualizado. Subdominio listo en app.realestateanalyst.co" >&2
+else
+    echo "[DDNS] Variables CF_* no definidas; se omite actualización de DNS." >&2
+fi
+# ─────────────────────────────────────────────────────────────────────────────
+
 exec streamlit run app.py \
     --server.port=8501 \
     --server.address=0.0.0.0 \

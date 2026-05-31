@@ -350,6 +350,19 @@ resource "aws_ecs_task_definition" "rea_streamlit" {
       {
         name      = "STREAMLIT_SECRETS_JSON"
         valueFrom = var.streamlit_secrets_arn
+      },
+      # Cloudflare DDNS — claves individuales del mismo secreto JSON
+      {
+        name      = "CF_API_TOKEN"
+        valueFrom = "${var.streamlit_secrets_arn}:CF_API_TOKEN::"
+      },
+      {
+        name      = "CF_ZONE_ID"
+        valueFrom = "${var.streamlit_secrets_arn}:CF_ZONE_ID::"
+      },
+      {
+        name      = "CF_RECORD_ID"
+        valueFrom = "${var.streamlit_secrets_arn}:CF_RECORD_ID::"
       }
     ] : []
 

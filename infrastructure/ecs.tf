@@ -258,8 +258,8 @@ resource "aws_ecs_task_definition" "rea_api" {
   # │  • 512 CPU: reduce latencia de warmup para modelo + DuckDB.         │
   # │  • 2048 MB: evita OOM durante startup (bundle + DuckDB + uvicorn). │
   # └─────────────────────────────────────────────────────────────────────┘
-  cpu    = "512"
-  memory = "2048"
+  cpu    = "256"
+  memory = "1024"
 
   execution_role_arn = aws_iam_role.ecs_exec_role.arn
   task_role_arn      = aws_iam_role.ecs_task_role.arn
@@ -317,8 +317,8 @@ resource "aws_ecs_task_definition" "rea_streamlit" {
   # │  1.2 GiB de margen para picos de GC y conversión pandas/PyArrow.    │
   # │  CPU 512 acelera dataset.to_table() que es CPU-bound en C++.        │
   # └─────────────────────────────────────────────────────────────────────┘
-  cpu    = "512"
-  memory = "2048"
+  cpu    = "256"
+  memory = "1024"
 
   execution_role_arn = aws_iam_role.ecs_exec_role.arn
   task_role_arn      = aws_iam_role.ecs_task_role.arn

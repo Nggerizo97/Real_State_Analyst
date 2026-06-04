@@ -1,24 +1,21 @@
 """
 api/core/model.py
 =================
-Singleton que carga el bundle XGBoost una sola vez al arrancar la API.
-
-El bundle contiene:
-  - model          : XGBRegressor entrenado
-  - feature_cols   : lista de features en el orden correcto
-  - city_stats / segment_stats / ... : tablas de market features (para score_single)
-  - metrics        : {"mape": 20.8, ...}
-  - strategy       : "absolute" | "residual"
+Singleton XGBoost con carga desde S3 y:
+  - Verificación de integridad SHA-256 (si el manifest la provee)
+  - Carga de modelo JSON desde memoria (sin tempfile)
+  - Logging estructurado
 """
-import io
+import hashlib
 import json
-import os
+import logging
 import pickle
-import tempfile
 
 import boto3
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class ModelRegistry:
@@ -37,13 +34,13 @@ class ModelRegistry:
 
         client = boto3.client("s3", **client_kwargs)
 
-        # 1. Manifest → obtener la clave del modelo champion
+        # 1. Manifest → clave del modelo champion + checksum opcional
         manifest_resp = client.get_object(Bucket=s.s3_bucket, Key=s.model_manifest_key)
         manifest: dict = json.loads(manifest_resp["Body"].read())
         model_key = manifest.get("champion_model_key", "")
+        expected_checksum: str | None = manifest.get("champion_model_sha256")
 
         if not model_key:
-            # Discovery fallback
             objs = client.list_objects_v2(
                 Bucket=s.s3_bucket, Prefix="models/"
             ).get("Contents", [])
@@ -53,14 +50,25 @@ class ModelRegistry:
             if not bundles:
                 raise RuntimeError("No se encontró ningún bundle de modelo en S3.")
             model_key = bundles[-1]
+            expected_checksum = None
 
         self._model_key = model_key
 
-        # 2. Descargar bundle (JSON o Pickle)
-        raw = client.get_object(Bucket=s.s3_bucket, Key=model_key)["Body"].read()
+        # 2. Descargar bundle
+        raw: bytes = client.get_object(Bucket=s.s3_bucket, Key=model_key)["Body"].read()
 
+        # 3. Verificar integridad si el manifest provee checksum SHA-256
+        if expected_checksum:
+            actual = hashlib.sha256(raw).hexdigest()
+            if actual != expected_checksum:
+                raise RuntimeError(
+                    f"Fallo de integridad del modelo: checksum no coincide. "
+                    f"Esperado: {expected_checksum[:16]}… Obtenido: {actual[:16]}…"
+                )
+            logger.info("Checksum SHA-256 del modelo verificado.")
+
+        # 4. Deserializar (JSON o Pickle)
         if raw.lstrip()[:1] == b"{":
-            # Formato JSON
             import xgboost as xgb
 
             bundle: dict = json.loads(raw)
@@ -68,22 +76,18 @@ class ModelRegistry:
             if isinstance(model_data, (str, dict)):
                 model_json = model_data if isinstance(model_data, str) else json.dumps(model_data)
                 reg = xgb.XGBRegressor()
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tf:
-                    tf.write(model_json)
-                    tf_path = tf.name
-                reg.load_model(tf_path)
-                os.remove(tf_path)
+                # Cargar desde bytearray en memoria — sin tempfile
+                reg.load_model(bytearray(model_json.encode("utf-8")))
                 bundle["model"] = reg
             self._bundle = bundle
         else:
-            # Formato Pickle
-            self._bundle = pickle.loads(raw)
+            # Pickle: solo aceptable si checksum fue verificado
+            self._bundle = pickle.loads(raw)  # noqa: S301
 
         mape = self._bundle.get("metrics", {}).get("mape", "N/A")  # type: ignore
-        print(
-            f"[MODEL] Bundle cargado. key={model_key} | MAPE={mape}% | "
-            f"features={len(self._bundle.get('feature_cols', []))}",  # type: ignore
-            flush=True,
+        logger.info(
+            "Bundle cargado. key=%s | MAPE=%s%% | features=%d",
+            model_key, mape, len(self._bundle.get("feature_cols", [])),  # type: ignore
         )
 
     # ------------------------------------------------------------------

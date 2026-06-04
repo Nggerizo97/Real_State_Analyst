@@ -4,6 +4,7 @@ api/routers/search.py
 POST /search          → Búsqueda paginada de inmuebles en Gold Parquet (DuckDB)
 GET  /search/metadata → Listas de valores únicos para filtros del frontend
 """
+import logging
 import math
 import re
 from typing import List
@@ -13,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from ..core.db import db
 from ..schemas.search import PropertyItem, SearchRequest, SearchResponse
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/search", tags=["Search"])
 
 # Columnas que se devuelven en los items (subset liviano del Gold)
@@ -25,15 +27,12 @@ _ITEM_COLS = [
     "score_inversion", "precio_predicho", "first_seen_date", "precio_cambio_pct", "url",
 ]
 
-# Campos y direcciones permitidas para ORDER BY (whitelist anti-injection)
 _SORTABLE = frozenset(["precio_num", "area_m2", "habitaciones", "score_inversion", "precio_predicho", "rentabilidad_potencial", "num_portales"])
 _DIRECTIONS = frozenset(["asc", "desc"])
-
-_TOKEN_RE = re.compile(r"^[\w\-]{1,64}$")  # acepta letras, dígitos, _ y -
+_TOKEN_RE = re.compile(r"^[\w\-]{1,64}$")
 
 
 def _safe_token(value: str) -> str:
-    """Valida que un token de texto no contenga caracteres SQL peligrosos."""
     if not _TOKEN_RE.match(value):
         raise HTTPException(status_code=422, detail=f"Token inválido: '{value}'")
     return value
@@ -43,18 +42,9 @@ def _safe_token(value: str) -> str:
 def search(req: SearchRequest) -> SearchResponse:
     """Busca inmuebles con filtros opcionales + paginación."""
 
-    # Columnas existentes en la vista (robustez si la vista no tiene todos)
-    try:
-        available_cols = {
-            row[0]
-            for row in db.conn.execute("DESCRIBE inmuebles").fetchall()
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"DuckDB no disponible: {exc}") from exc
+    # Usar columnas cacheadas en startup — evita DESCRIBE en cada request
+    available_cols = db.available_cols if db.available_cols else frozenset(_ITEM_COLS)
 
-    # Columnas a seleccionar con casting de seguridad
-    # - id → VARCHAR (puede ser int64 en Parquet)
-    # - first_seen_date → VARCHAR (puede ser DATE/TIMESTAMP y llegar como NaT a pandas)
     _DATE_COLS = {"first_seen_date"}
     col_list = ", ".join(
         (f"CAST({c} AS VARCHAR) AS {c}" if (c == "id" or c in _DATE_COLS) else c)
@@ -63,7 +53,6 @@ def search(req: SearchRequest) -> SearchResponse:
         for c in _ITEM_COLS
     )
 
-    # Construir cláusulas WHERE con parámetros posicionales (evita SQL injection)
     conditions: List[str] = []
     params: List = []
 
@@ -115,16 +104,16 @@ def search(req: SearchRequest) -> SearchResponse:
 
     where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-    # Ordenamiento (whitelist)
     order_col = req.order_by if req.order_by in _SORTABLE else "precio_num"
     order_dir = req.order_dir.lower() if req.order_dir.lower() in _DIRECTIONS else "asc"
 
     # COUNT
     count_sql = f"SELECT COUNT(*) FROM inmuebles {where_sql}"
     try:
-        total: int = db.conn.execute(count_sql, params).fetchone()[0]
+        total: int = db.query_one(count_sql, params)[0]
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Error contando registros: {exc}") from exc
+        logger.error("Error contando registros: %s", exc)
+        raise HTTPException(status_code=500, detail="Error interno al contar registros.") from exc
 
     # DATA
     data_sql = f"""
@@ -138,10 +127,9 @@ def search(req: SearchRequest) -> SearchResponse:
     try:
         rows_df = db.query_df(data_sql, params)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Error consultando datos: {exc}") from exc
+        logger.error("Error consultando datos: %s", exc)
+        raise HTTPException(status_code=500, detail="Error interno al consultar datos.") from exc
 
-    # Sanitizar NaN / ±Inf → None antes de pasar a Pydantic/JSON
-    # Python json.dumps rechaza float('nan') e float('inf') por spec JSON
     def _safe_val(v):
         if v is None:
             return None
@@ -174,7 +162,6 @@ def search_metadata():
             "SELECT DISTINCT market_token FROM mercado_analitica WHERE analytics_level = 'market' AND market_token IS NOT NULL ORDER BY market_token"
         )["market_token"].tolist()
 
-        # Evitar scans costosos en la tabla principal
         tipos = ["apartamento", "casa", "lote", "local_comercial", "oficina"]
         fuentes = ["bancolombia_tu360", "ciencuadras", "ciencuadras_nuevo", "ciencuadras_usado", "facebook", "fincaraiz", "mercadolibre", "metrocuadrado", "properati"]
 
@@ -187,54 +174,48 @@ def search_metadata():
             "price_max": 5000000000.0,
         }
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.error("Error en /search/metadata: %s", exc)
+        raise HTTPException(status_code=500, detail="Error interno al obtener metadatos.") from exc
 
 
 @router.get("/summary")
 def search_summary():
     """Resumen global liviano para el frontend Streamlit API-first."""
     try:
-        # 1. Intentar obtener el último snapshot de portal_operacion
         try:
             latest_snapshot = db.query_one("SELECT MAX(gold_snapshot_at) FROM portal_operacion")[0]
             if latest_snapshot:
                 portal_row = db.query_one(
-                    """
-                    SELECT SUM(portal_ofertas_activas), COUNT(DISTINCT portal)
-                    FROM portal_operacion
-                    WHERE gold_snapshot_at = ?
-                    """,
+                    "SELECT SUM(portal_ofertas_activas), COUNT(DISTINCT portal) FROM portal_operacion WHERE gold_snapshot_at = ?",
                     [latest_snapshot]
                 )
             else:
                 portal_row = db.query_one("SELECT SUM(portal_ofertas_activas), COUNT(DISTINCT portal) FROM portal_operacion")
-            total_inmuebles = int(portal_row[0] or 101106)
-            n_portales = int(portal_row[1] or 7)
+            total_inmuebles = int(portal_row[0] or 0)
+            n_portales = int(portal_row[1] or 0)
         except Exception:
-            total_inmuebles = 101106
-            n_portales = 7
+            total_inmuebles = 0
+            n_portales = 0
 
-        # 2. Obtener n_mercados y n_ciudades de mercado_analitica
         try:
-            n_mercados = int(db.query_one("SELECT COUNT(DISTINCT market_token) FROM mercado_analitica WHERE analytics_level = 'market' AND market_token IS NOT NULL")[0] or 25)
-            n_ciudades = int(db.query_one("SELECT COUNT(DISTINCT city_token) FROM mercado_analitica WHERE analytics_level = 'city' AND city_token IS NOT NULL")[0] or 133)
+            n_mercados = int(db.query_one("SELECT COUNT(DISTINCT market_token) FROM mercado_analitica WHERE analytics_level = 'market' AND market_token IS NOT NULL")[0] or 0)
+            n_ciudades = int(db.query_one("SELECT COUNT(DISTINCT city_token) FROM mercado_analitica WHERE analytics_level = 'city' AND city_token IS NOT NULL")[0] or 0)
         except Exception:
-            n_mercados = 25
-            n_ciudades = 133
+            n_mercados = 0
+            n_ciudades = 0
 
-        # 3. Métricas estáticas globales estimadas de DANE / Lakehouse
-        med_precio = 585000000.0
-        med_precio_m2 = 5150000.0
-        n_oportunidades = 2022
+        stale = (total_inmuebles == 0)
 
         return {
             "total_inmuebles": total_inmuebles,
             "n_mercados": n_mercados,
             "n_ciudades": n_ciudades,
             "n_portales": n_portales,
-            "med_precio": med_precio,
-            "med_precio_m2": med_precio_m2,
-            "n_oportunidades": n_oportunidades,
+            "med_precio": 585000000.0,
+            "med_precio_m2": 5150000.0,
+            "n_oportunidades": 0,
+            "stale_data": stale,
         }
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.error("Error en /search/summary: %s", exc)
+        raise HTTPException(status_code=500, detail="Error interno al obtener resumen.") from exc

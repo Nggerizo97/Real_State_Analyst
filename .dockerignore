@@ -1,9 +1,28 @@
 .git
 .github
 .env
+*.env
 .streamlit
 __pycache__
+**/__pycache__
+**/*.pyc
+**/*.pyo
 notebooks
 infrastructure
-*.pyc
 tests
+# Datos locales (no van al container)
+data/
+*.csv
+*.parquet
+*.pkl
+# Frontend Streamlit (no necesario en la imagen de la API)
+app.py
+main.py
+style.css
+README.md
+requirements.txt
+requirements-scraper.txt
+runtime.txt
+docker-compose.yml
+docker-entrypoint.sh
+scripts/

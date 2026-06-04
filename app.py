@@ -578,8 +578,18 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
         return None
 
 
-def query_gold_by_filters(cities: list, price_min: float, price_max: float, table_name: str = "app_inmuebles_scored", limit: int = 500) -> pd.DataFrame:
-    """Descarga de S3 de forma selectiva y ultrarrápida únicamente los registros de las ciudades y precios seleccionados."""
+def query_gold_by_filters(
+    cities: list,
+    price_min: float,
+    price_max: float,
+    table_name: str = "app_inmuebles_scored",
+    limit: int = 500,
+    tipos: list | None = None,
+    estados: list | None = None,
+    habs_min: int | None = None,
+    markets: list | None = None,
+) -> pd.DataFrame:
+    """Descarga de S3 con todos los filtros aplicados en PyArrow (C++ level) ANTES del slice."""
     import gc
     try:
         bucket = aws_config.get("s3_bucket_name", "")
@@ -610,22 +620,44 @@ def query_gold_by_filters(cities: list, price_min: float, price_max: float, tabl
         else:
             cols_to_load = all_cols
         
-        # 1. Filtros Pushdown en PyArrow (C++ level)
-        # precio_num está almacenado como int64 en el parquet; usar pa.int64() para evitar
-        # el error de conversión float64→float32 (precisión 2^24) para precios > $16M COP.
+        # 1. Filtros Pushdown en PyArrow (C++ level) — TODOS los filtros van aquí,
+        # antes del slice, para que limit se aplique sobre el conjunto YA filtrado.
         _pm = pa.scalar(int(price_min), type=pa.int64())
         _pM = pa.scalar(int(price_max), type=pa.int64())
         filter_expr = (pc.field("precio_num") >= _pm) & (pc.field("precio_num") <= _pM)
+
         if cities:
-            # Normalizar nombres de ciudades seleccionadas a minúsculas
             cities_lower = [str(c).lower().strip() for c in cities]
             filter_expr = filter_expr & pc.field("city_token").isin(cities_lower)
-            
+
+        if markets:
+            markets_lower = [str(m).lower().strip() for m in markets]
+            filter_expr = filter_expr & pc.field("market_token").isin(markets_lower)
+
+        if tipos:
+            # Incluir siempre 'desconocido'/'otro' sólo si el usuario NO filtró por tipo
+            tipos_lower = [str(t).lower().strip() for t in tipos]
+            filter_expr = filter_expr & pc.field("tipo_inmueble").isin(tipos_lower)
+
+        if estados:
+            # Los portales dejan ~90% de inmuebles con estado 'desconocido'.
+            # Si el usuario filtra por 'nuevo' o 'usado', también incluimos 'desconocido'
+            # para no perder inventario mal etiquetado. El usuario puede afinar en los resultados.
+            estados_lower = [str(e).lower().strip() for e in estados]
+            if "desconocido" not in estados_lower:
+                estados_lower = estados_lower + ["desconocido"]
+            filter_expr = filter_expr & pc.field("estado_inmueble").isin(estados_lower)
+
+        if habs_min and habs_min > 1:
+            filter_expr = filter_expr & (pc.field("habitaciones") >= pa.scalar(float(habs_min)))
+
+        print(f"[ON-DEMAND] Filtros PyArrow: ciudades={cities}, tipos={tipos}, estados={estados}, habs>={habs_min}", flush=True)
         table = dataset.to_table(
             columns=cols_to_load,
             filter=filter_expr
         )
-        
+        print(f"[ON-DEMAND] Pre-slice shape: {table.num_rows} filas", flush=True)
+
         if limit is not None and limit > 0:
             table = table.slice(length=limit)
             
@@ -1004,8 +1036,11 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     sb1, sb2 = st.columns(2)
-    sb1.metric("MAPE modelo", f"{MAPE_BADGE}%" if isinstance(MAPE_BADGE, (int, float)) else MAPE_BADGE)
-    sb2.metric("Actualizado", DEPLOYED or "N/A")
+    _mape_num = float(str(MAPE_BADGE).replace('%','').strip()) if MAPE_BADGE else 20.0
+    _diff_500 = round(500 * _mape_num / 100, 0)
+    sb1.metric("MAPE", f"{_mape_num:.1f}%",
+               help=f"Error promedio del modelo: {_mape_num:.1f}%. Para una propiedad de 500M COP el estimado puede variar \u00b1{_diff_500:.0f}M COP")
+    sb2.metric("Fecha", DEPLOYED or "N/A")
 
     st.markdown(
         '<hr style="border-color:rgba(255,255,255,.1);margin:.9rem 0">',
@@ -1287,7 +1322,7 @@ tab3, tab1, tab2, tab4 = st.tabs([
     "Dashboard",
     "Buscador Inteligente",
     "Simulador Financiero",
-    "Valoración  ⚒",
+    "Valoración",
 ])
 
 
@@ -1297,6 +1332,24 @@ tab3, tab1, tab2, tab4 = st.tabs([
 with tab1:
     st.markdown("## Buscador Inteligente")
     st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
+
+    with st.expander("ℹ️ ¿Cómo usar el Buscador Inteligente?", expanded=False):
+        st.markdown("""
+**El Buscador te ayuda a encontrar inmuebles que se ajusten a tu perfil financiero.**
+
+**Paso a paso:**
+1. **Perfil financiero** — Ingresa tu capacidad de pago mensual, el monto del préstamo y la tasa de interés. El sistema calcula automáticamente si la cuota es viable.
+2. **Filtros de búsqueda** — Selecciona ciudad, tipo de inmueble (apartamento, casa…), mercado, estado (nuevo / usado) y habitaciones mínimas.
+3. **Rango de precio** — Ajusta el slider para acotar el rango. El máximo va hasta $10.000M para no limitarte.
+4. **Buscar** — Haz clic en el botón y el sistema consulta toda la base de datos en tiempo real.
+
+**¿Qué significa la columna "Señal %"?**
+Es la diferencia entre el precio publicado y el valor que el modelo estima justo para ese inmueble y zona.
+- **Señal positiva (+X%)** → el inmueble está *por debajo* del precio justo de mercado → **oportunidad de compra**.
+- **Señal negativa (−X%)** → el inmueble está *por encima* del precio justo → evaluar si conviene negociar.
+
+**Consejo:** Si ves 0 resultados, prueba ampliar el rango de precio o cambiar el estado a "Todos" — muchos inmuebles no están etiquetados como nuevo/usado en los portales.
+        """)
 
     # ── Perfil financiero ────────────────────────────────────────
     with st.expander("▸ Perfil financiero", expanded=True):
@@ -1342,63 +1395,51 @@ with tab1:
 
     # ── Filtros ──────────────────────────────────────────────────
     with st.expander("▸ Filtros de búsqueda", expanded=True):
-        fc_geo1, fc_geo2, fc_geo3, fc_geo4 = st.columns(4)
+        fc_geo1, fc_geo2 = st.columns(2)
         with fc_geo1:
-            if api_mode and search_meta:
-                mercados_disp = sorted([str(m) for m in search_meta.get("markets", [])
-                                         if m and str(m) not in ("nan", "otra_ciudad_metropolitana", "mercado_otro")])
-            elif gold_analitica is not None and not gold_analitica.empty:
-                mercados_disp = sorted([str(m) for m in gold_analitica["market_token"].unique()
-                                         if m and str(m) not in ("nan", "otra_ciudad_metropolitana", "mercado_otro")])
-            elif df is not None:
-                mercados_disp = sorted([str(m) for m in df["market_token"].unique()
-                                         if m and str(m) not in ("nan", "otra_ciudad_metropolitana")])
-            else:
-                mercados_disp = ["bogota_metropolitana", "valle_aburra", "cali_metropolitana", "barranquilla_metropolitana", "eje_cafetero"]
-            
-            mercado_sel = st.multiselect("Mercado", options=mercados_disp,
-                                          help="Mercado comercial / metropolitano")
-        with fc_geo2:
-            # Ciudades filtradas por mercado seleccionado
+            # Ciudad primero — el usuario siempre piensa en ciudad, no en token de mercado
             if api_mode and not market_catalog.empty:
-                if mercado_sel:
-                    ciudades_filtradas = market_catalog[market_catalog["market_token"].isin(mercado_sel)]["city_token"].dropna().unique()
-                else:
-                    ciudades_filtradas = market_catalog["city_token"].dropna().unique()
+                ciudades_filtradas_all = market_catalog["city_token"].dropna().unique()
             elif gold_analitica is not None and not gold_analitica.empty:
-                if mercado_sel:
-                    ciudades_filtradas = gold_analitica[(gold_analitica["market_token"].isin(mercado_sel)) & (gold_analitica["analytics_level"] == "city")]["city_token"].unique()
-                else:
-                    ciudades_filtradas = gold_analitica[gold_analitica["analytics_level"] == "city"]["city_token"].unique()
+                ciudades_filtradas_all = gold_analitica[gold_analitica["analytics_level"] == "city"]["city_token"].unique()
             elif df is not None:
-                if mercado_sel:
-                    ciudades_filtradas = df[df["market_token"].isin(mercado_sel)]["city_token"].unique()
-                else:
-                    ciudades_filtradas = df["city_token"].unique()
+                ciudades_filtradas_all = df["city_token"].unique()
             else:
-                ciudades_filtradas = ["bogota", "medellin", "cali", "barranquilla", "pereira", "manizales", "armenia", "envigado", "sabaneta", "chia"]
-                
-            ciudades_disp = sorted([str(c) for c in ciudades_filtradas if c != "otra_ciudad"])
-            ciudad_sel = st.multiselect("Ciudad (municipio)", options=ciudades_disp)
-            st.session_state.ciudad_interes = ", ".join(ciudad_sel) if ciudad_sel else (
-                ", ".join(mercado_sel) if mercado_sel else "No especificada"
-            )
-        
-        with fc_geo3:
-            if df is not None and ciudad_sel and "comuna_mercado" in df.columns:
-                comunas_f = df[df["city_token"].isin(ciudad_sel)]["comuna_mercado"].unique()
-                comuna_disp = sorted([c for c in comunas_f if pd.notna(c) and c != "comuna_otra"])
-            else:
-                comuna_disp = []
-            comuna_sel = st.multiselect("Comuna / Zona", options=comuna_disp)
+                ciudades_filtradas_all = ["bogota", "medellin", "cali", "barranquilla", "pereira", "manizales", "armenia", "envigado", "sabaneta", "chia"]
 
-        with fc_geo4:
-            if df is not None and comuna_sel and "sector_mercado" in df.columns:
-                sectores_f = df[df["comuna_mercado"].isin(comuna_sel)]["sector_mercado"].unique()
-                sector_disp = sorted([s for s in sectores_f if pd.notna(s) and s != "sector_otra"])
+            ciudades_disp = sorted([str(c) for c in ciudades_filtradas_all if c != "otra_ciudad"])
+            ciudad_sel = st.multiselect("Ciudad (municipio)", options=ciudades_disp,
+                                         help="Escribe el nombre de la ciudad — el mercado se deriva automáticamente")
+            st.session_state.ciudad_interes = ", ".join(ciudad_sel) if ciudad_sel else "No especificada"
+
+        with fc_geo2:
+            # Mercado derivado de la ciudad seleccionada (opcional — para afinar búsqueda)
+            if api_mode and not market_catalog.empty:
+                if ciudad_sel:
+                    mercados_filtrados = market_catalog[market_catalog["city_token"].isin(ciudad_sel)]["market_token"].dropna().unique()
+                else:
+                    mercados_filtrados = market_catalog["market_token"].dropna().unique()
+            elif gold_analitica is not None and not gold_analitica.empty:
+                if ciudad_sel:
+                    mercados_filtrados = gold_analitica[gold_analitica["city_token"].isin(ciudad_sel)]["market_token"].unique()
+                else:
+                    mercados_filtrados = gold_analitica["market_token"].unique()
+            elif df is not None:
+                if ciudad_sel:
+                    mercados_filtrados = df[df["city_token"].isin(ciudad_sel)]["market_token"].unique()
+                else:
+                    mercados_filtrados = df["market_token"].unique()
             else:
-                sector_disp = []
-            sector_sel = st.multiselect("Sector / Barrio", options=sector_disp)
+                mercados_filtrados = ["bogota_metropolitana", "valle_aburra", "cali_metropolitana", "barranquilla_metropolitana", "eje_cafetero"]
+
+            mercados_disp = sorted([str(m) for m in mercados_filtrados
+                                    if m and str(m) not in ("nan", "otra_ciudad_metropolitana", "mercado_otro")])
+            mercado_sel = st.multiselect("Mercado", options=mercados_disp,
+                                          default=mercados_disp if ciudad_sel and len(mercados_disp) <= 3 else [],
+                                          help="Zona metropolitana — se auto-completa al elegir ciudad")
+        
+        # fc_geo3 y fc_geo4 eliminados: los tokens de comuna/sector no se pueblan en modo lazy
+        # (df=None al arrancar) y no se pasaban al query. La ciudad+mercado son suficientes.
 
         fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 1])
         with fc1:
@@ -1420,14 +1461,18 @@ with tab1:
                                             help="Mostrar solo inmuebles en 2+ portales")
 
         _M = 1_000_000.0
-        p_max_slider_m = (
-            float(min(monto_max * 1.3, df["precio_num"].quantile(0.97))) / _M
-            if df is not None
-            else float(min(monto_max * 1.3, search_meta.get("price_max", monto_max * 1.3))) / _M
-            if api_mode and search_meta
-            else float(monto_max * 1.3) / _M
-        )
-        _val_max_m = min(float(monto_max) / _M, p_max_slider_m)
+        # Máximo del slider: independiente del presupuesto del usuario.
+        # El tope de $464M era un bug — Bogotá tiene medianas de $700M y propiedades >$10B.
+        if df is not None:
+            p_max_slider_m = float(df["precio_num"].quantile(0.97)) / _M
+        elif api_mode and search_meta and search_meta.get("price_max"):
+            p_max_slider_m = float(search_meta["price_max"]) / _M
+        elif gold_analitica is not None and not gold_analitica.empty and "precio_mediano" in gold_analitica.columns:
+            p_max_slider_m = float(gold_analitica["precio_mediano"].max()) / _M * 4
+        else:
+            p_max_slider_m = 10_000.0  # 10 000M COP — tope razonable para Colombia
+        p_max_slider_m = max(p_max_slider_m, 2_000.0)  # mínimo 2B para que Bogotá quepa siempre
+        _val_max_m = min(float(monto_max) / _M, p_max_slider_m)  # el valor inicial sigue siendo el presupuesto
         precio_rango_m = st.slider(
             "Rango de precio",
             min_value=50.0,
@@ -1462,25 +1507,22 @@ with tab1:
                     limit=200,
                 )
             else:
-                # MODO S3-DIRECTO LAZY Y OPTIMIZADO: Consulta PyArrow con filtros pushdown y límite estricto de 500
+                # MODO S3-DIRECTO: todos los filtros van al PyArrow pushdown ANTES del slice
                 cands_df = query_gold_by_filters(
                     cities=ciudad_sel,
                     price_min=precio_rango[0],
                     price_max=precio_rango[1],
                     limit=500,
+                    tipos=tipo_sel if tipo_sel else None,
+                    estados=estado_sel if estado_sel else None,
+                    habs_min=habs_min if habs_min > 1 else None,
+                    markets=mercado_sel if mercado_sel else None,
                 )
                 if cands_df is not None and not cands_df.empty:
                     # Enriquecer métricas si no vienen del Lakehouse pre-costeado
                     if "score_inversion" not in cands_df.columns:
                         cands_df = _clean_gold(cands_df)
-                    
-                    # Aplicar segregaciones locales en Pandas en memoria sobre el subset controlado de 500
-                    if tipo_sel:
-                        cands_df = cands_df[cands_df["tipo_inmueble"].isin(tipo_sel)]
-                    if estado_sel:
-                        cands_df = cands_df[cands_df["estado_inmueble"].isin(estado_sel)]
-                    if habs_min > 0 and "habitaciones" in cands_df.columns:
-                        cands_df = cands_df[cands_df["habitaciones"].fillna(0) >= habs_min]
+
                     if only_multiportal and "num_portales" in cands_df.columns:
                         cands_df = cands_df[cands_df["num_portales"].fillna(0) > 1]
                     
@@ -1529,29 +1571,24 @@ with tab1:
             unsafe_allow_html=True
         )
     elif candidatos.empty:
-        if api_mode:
-            st.error("Sin candidatos para los filtros actuales. Ajusta el rango de precio, mercado o ciudad.")
-            st.info("💡 **Consejo de búsqueda:** Al limpiar el bucket de los 6.4 millones de duplicados históricos obsoletos, el catálogo consolidado de hoy cuenta con **7.654 inmuebles activos** concentrados en las ciudades principales (**Bogotá**, **Medellín**, **Cali**, **Barranquilla** y **Pereira**). Si seleccionas una ciudad secundaria o aplicas filtros muy restrictivos, es normal obtener 0 resultados. Prueba seleccionando una de estas ciudades principais o ampliando el rango de precio.")
-        else:
-            st.error("Sin candidatos para los filtros actuales. Ajusta el rango de precio, mercado o ciudad.")
-            if df is not None:
-                mask_diag = df["precio_num"].between(*precio_rango)
-                c2 = mask_diag.sum()
-                if mercado_sel: mask_diag &= df["market_token"].isin(mercado_sel)
-                c3 = mask_diag.sum()
-                if tipo_sel: mask_diag &= df["tipo_inmueble"].isin(tipo_sel)
-                c4 = mask_diag.sum()
-                if estado_sel: mask_diag &= df["estado_inmueble"].isin(estado_sel)
-                c5 = mask_diag.sum()
-                st.warning(f"🔍 **DIAGNÓSTICO DETALLADO: ¿Por qué hay 0?**\n\n"
-                           f"1. En rango de precio (Toda Colombia): **{c2}**\n"
-                           f"2. En el mercado seleccionado: **{c3}**\n"
-                           f"3. Que sean tipo '{tipo_sel}': **{c4}**\n"
-                           f"4. Que ADEMÁS tengan etiqueta explicita de estado '{estado_sel}': **{c5}**\n\n"
-                           f"👉 Si el paso 4 cae a **0**, significa que los portales inmobiliarios NO etiquetaron correctamente el estado de esos inmuebles (los dejaron vacíos o 'desconocido'). **Quita la 'X' en Estado** para verlos.")
-            else:
-                st.info("💡 Prueba ampliando el rango de precio o seleccionando una ciudad diferente.")
-        # ---------------------------
+        st.error("Sin candidatos para los filtros actuales. Ajusta los filtros e intenta de nuevo.")
+        tips = []
+        if estado_sel:
+            tips.append(
+                f"⚠️ **Estado '{', '.join(estado_sel)}'**: el ~90% del catálogo tiene estado "
+                f"*desconocido* (los portales no lo etiquetan). Los resultados mostrados incluyen "
+                f"inmuebles *desconocido* + *{', '.join(estado_sel)}* — si sigue en 0, "
+                f"prueba quitando el filtro de Estado."
+            )
+        if tipo_sel:
+            tips.append(f"ℹ️ Tipo filtrado: **{', '.join(tipo_sel)}**. Prueba sin filtro de tipo para ver más opciones.")
+        if habs_min > 1:
+            tips.append(f"ℹ️ Hab. mínimas: **{habs_min}**. Reducir a 1 ampliará el catálogo.")
+        if not ciudad_sel:
+            tips.append("ℹ️ No seleccionaste ciudad. El catálogo está concentrado en Bogotá, Medellín, Cali, Barranquilla y Pereira.")
+        tips.append("ℹ️ El catálogo activo tiene ~7.600 inmuebles. Amplía el rango de precio o ajusta filtros.")
+        for tip in tips:
+            st.info(tip)
     else:
         res_col, chart_col = st.columns([3, 2])
 
@@ -1712,6 +1749,20 @@ with tab2:
     st.markdown("## Simulador Financiero")
     st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
 
+    with st.expander("ℹ️ ¿Cómo usar el Simulador Financiero?", expanded=False):
+        st.markdown("""
+**El Simulador analiza los candidatos que encontraste en el Buscador para ayudarte a elegir la mejor inversión.**
+
+**¿Qué muestra esta pestaña?**
+- **Recomendación del modelo** — el inmueble con mayor señal de oportunidad de tu búsqueda y su precio estimado por la IA.
+- **Galería por portal** — los mejores inmuebles disponibles en cada portal (Metrocuadrado, Ciencuadras, Properati…) con enlace directo.
+- **Rentabilidad media por mercado** — comparativa de señal promedio del modelo entre los mercados de tu búsqueda.
+- **Calidad de mercado** — score 0-100 que refleja liquidez, cobertura multiportal y consistencia de precios por mercado.
+- **Top candidatos** — tabla de los mejores inmuebles filtrados, listos para analizar con el asesor IA.
+
+**Flujo recomendado:** Primero usa el **Buscador Inteligente** → luego ven aquí para comparar candidatos → finalmente usa el **chat del asesor** (parte inferior) para profundizar en el análisis.
+        """)
+
     cands = st.session_state.get("tab1_candidates", pd.DataFrame())
     if cands is None:
         cands = pd.DataFrame()
@@ -1839,23 +1890,47 @@ with tab2:
                 base_inv_df.groupby("market_token")["rentabilidad_potencial"]
                 .agg(["mean", "count"]).reset_index()
             )
-            zona_rent = zona_rent[zona_rent["count"] >= 10].sort_values("mean", ascending=True).tail(15)
+            zona_rent = zona_rent[zona_rent["count"] >= 2].sort_values("mean", ascending=True).tail(15)
             zona_rent.columns = ["mercado", "rent_media", "n"]
-            fig_bar = go.Figure(go.Bar(
-                x=zona_rent["rent_media"],
-                y=zona_rent["mercado"].str.replace("_", " ").str.title(),
-                orientation="h",
-                marker=dict(color=zona_rent["rent_media"],
-                            colorscale=[[0, "#8b2020"], [0.5, "#b8935a"], [1, "#1a6b4a"]],
-                            showscale=False),
-                text=zona_rent["rent_media"].apply(lambda x: f"{x:+.1f}%"),
-                textposition="outside",
-            ))
-            dark_layout(fig_bar, height=400,
-                        xaxis=dict(showgrid=True, gridcolor=_GRID, zeroline=True,
-                                   zerolinecolor="#2c2c3a", zerolinewidth=1),
-                        yaxis=dict(showgrid=False))
-            st.plotly_chart(fig_bar, width="stretch")
+            if zona_rent.empty and gold_analitica is not None and "market_quality_score" in gold_analitica.columns:
+                # Fallback: mostrar precio mediano por mercado desde gold_analitica
+                st.markdown('<div class="section-label">Precio mediano por mercado</div>',
+                            unsafe_allow_html=True)
+                _ga_mkt = gold_analitica[gold_analitica["analytics_level"] == "market"][
+                    ["market_token", "precio_mediano"]
+                ].dropna().sort_values("precio_mediano", ascending=True).tail(15)
+                fig_bar = go.Figure(go.Bar(
+                    x=_ga_mkt["precio_mediano"] / 1e6,
+                    y=_ga_mkt["market_token"].str.replace("_", " ").str.title(),
+                    orientation="h",
+                    marker=dict(color=_ga_mkt["precio_mediano"],
+                                colorscale=[[0, "#dfc69f"], [1, "#b8935a"]], showscale=False),
+                    text=(_ga_mkt["precio_mediano"] / 1e6).apply(lambda x: f"${x:.0f}M"),
+                    textposition="outside",
+                ))
+                dark_layout(fig_bar, height=400,
+                            xaxis=dict(title="M COP", showgrid=True, gridcolor=_GRID),
+                            yaxis=dict(showgrid=False))
+                st.plotly_chart(fig_bar, width="stretch")
+                st.caption("Haz una búsqueda en el Buscador para ver la señal de rentabilidad por mercado.")
+            elif zona_rent.empty:
+                st.info("Haz una búsqueda en el **Buscador Inteligente** para ver la rentabilidad comparada entre mercados.")
+            else:
+                fig_bar = go.Figure(go.Bar(
+                    x=zona_rent["rent_media"],
+                    y=zona_rent["mercado"].str.replace("_", " ").str.title(),
+                    orientation="h",
+                    marker=dict(color=zona_rent["rent_media"],
+                                colorscale=[[0, "#8b2020"], [0.5, "#b8935a"], [1, "#1a6b4a"]],
+                                showscale=False),
+                    text=zona_rent["rent_media"].apply(lambda x: f"{x:+.1f}%"),
+                    textposition="outside",
+                ))
+                dark_layout(fig_bar, height=400,
+                            xaxis=dict(showgrid=True, gridcolor=_GRID, zeroline=True,
+                                       zerolinecolor="#2c2c3a", zerolinewidth=1),
+                            yaxis=dict(showgrid=False))
+                st.plotly_chart(fig_bar, width="stretch")
 
         # Lazy-load: primer acceso real a mercado_analitica (DESPUÉS de load_gold)
         if gold_analitica is None and not api_mode:
@@ -1935,6 +2010,21 @@ with tab3:
     st.markdown("## Dashboard — Inteligencia de mercado Colombia")
     st.markdown(DISCLAIMER_HTML, unsafe_allow_html=True)
 
+    with st.expander("ℹ️ ¿Qué muestra el Dashboard?", expanded=False):
+        st.markdown("""
+**Vista macro del mercado inmobiliario colombiano — sin necesidad de hacer una búsqueda.**
+
+**Secciones principales:**
+- **Distribución de ofertas** — cuántos inmuebles activos hay por mercado (nuevo vs. usado, VIS vs. No VIS, por ciudad).
+- **Precio mediano por mercado** — referencia de precios para comparar y calibrar expectativas antes de buscar.
+- **Precio/m²** — qué mercados ofrecen más área por peso invertido.
+- **Bandas de precio** — rango justo (banda baja / alta) calculado por el modelo para cada mercado. Útil para detectar si un precio es razonable.
+- **Señal de mercado** — porcentaje de inmuebles etiquetados como "Oportunidad" vs "Sobrevalorado" por mercado. Ayuda a decidir *dónde* buscar.
+- **Análisis editorial** — resumen narrativo generado automáticamente a partir de los datos reales del corte actual.
+
+**Modo de uso:** Este Dashboard se actualiza con cada recarga de la app. No requiere configurar filtros. Sirve como punto de partida para entender el mercado antes de hacer búsquedas específicas.
+        """)
+
     if df is None:
         # --- MODO LAZY (API o Local sin búsqueda cargada): RENDERIZAR CHARTS CON DATOS AGREGADOS ---
         st.markdown('<div class="section-label">Inteligencia de mercado — Vista Agregada</div>', unsafe_allow_html=True)
@@ -1980,18 +2070,21 @@ with tab3:
                 st.plotly_chart(fig_vis, width="stretch")
                 
             with v2:
-                # Bar Chart: Precio Mediano por Mercado
+                # Bar Chart: Precio Mediano por Mercado (horizontal — legible con 22+ mercados)
+                _med_sorted = market_catalog.dropna(subset=["precio_mediano"]).sort_values("precio_mediano", ascending=True)
                 fig_med = go.Figure(go.Bar(
-                    x=market_catalog["market_token"].str.replace("_", " ").str.title(),
-                    y=market_catalog["precio_mediano"] / 1e6,
-                    marker=dict(color=market_catalog["precio_mediano"], colorscale=[[0, "#dfc69f"], [1, "#b8935a"]], showscale=False),
-                    text=(market_catalog["precio_mediano"] / 1e6).apply(lambda x: f"${x:.0f}M"),
+                    orientation='h',
+                    y=_med_sorted["market_token"].str.replace("_", " ").str.title(),
+                    x=_med_sorted["precio_mediano"] / 1e6,
+                    marker=dict(color=_med_sorted["precio_mediano"], colorscale=[[0, "#dfc69f"], [1, "#b8935a"]], showscale=False),
+                    text=(_med_sorted["precio_mediano"] / 1e6).apply(lambda x: f"${x:.0f}M"),
                     textposition="outside",
                 ))
-                dark_layout(fig_med, height=320,
+                dark_layout(fig_med, height=520,
                             title=dict(text="Precio Mediano por Mercado", font=dict(family="Playfair Display", size=14, color=_TEXT)),
-                            xaxis=dict(tickangle=-35, showgrid=False),
-                            yaxis=dict(title="M COP", showgrid=True, gridcolor=_GRID))
+                            xaxis=dict(title="M COP", showgrid=True, gridcolor=_GRID),
+                            yaxis=dict(showgrid=False),
+                            margin=dict(l=180, r=60, t=10, b=10))
                 st.plotly_chart(fig_med, width="stretch")
 
             st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
@@ -2000,17 +2093,20 @@ with tab3:
             st.markdown('<div class="section-label">Eficiencia de compra — precio por m² por mercado</div>', unsafe_allow_html=True)
             st.caption("Mercados con menor precio/m² ofrecen más área por peso invertido.")
             
+            _m2_sorted = market_catalog.dropna(subset=["precio_m2_mediano"]).sort_values("precio_m2_mediano", ascending=True)
             fig_m2bar = go.Figure(go.Bar(
-                x=market_catalog["market_token"].str.replace("_", " ").str.title(),
-                y=market_catalog["precio_m2_mediano"] / 1e6,
-                marker=dict(color=market_catalog["precio_m2_mediano"],
+                orientation='h',
+                y=_m2_sorted["market_token"].str.replace("_", " ").str.title(),
+                x=_m2_sorted["precio_m2_mediano"] / 1e6,
+                marker=dict(color=_m2_sorted["precio_m2_mediano"],
                             colorscale=[[0, "#e8f4ef"], [1, "#0a3d28"]], showscale=False),
-                text=(market_catalog["precio_m2_mediano"] / 1e6).apply(lambda x: f"${x:.2f}M"),
+                text=(_m2_sorted["precio_m2_mediano"] / 1e6).apply(lambda x: f"${x:.2f}M"),
                 textposition="outside",
             ))
-            dark_layout(fig_m2bar, height=360,
-                        xaxis=dict(tickangle=-35, showgrid=False),
-                        yaxis=dict(title="M COP / m²", showgrid=True, gridcolor=_GRID))
+            dark_layout(fig_m2bar, height=520,
+                        xaxis=dict(title="M COP / m²", showgrid=True, gridcolor=_GRID),
+                        yaxis=dict(showgrid=False),
+                        margin=dict(l=180, r=60, t=10, b=10))
             st.plotly_chart(fig_m2bar, width="stretch")
 
             st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
@@ -2272,12 +2368,30 @@ with tab4:
     st.markdown("## Valoración de inmueble")
     st.markdown(
         '<div class="disclaimer">'
-        '<strong>Apartado en construcción ⚒</strong> — La valoración por características ya funciona. '
-        'El análisis de imágenes usa el LLM para descripción cualitativa de acabados; '
-        'el número de valoración viene del modelo XGBoost, no de la imagen.'
+        'Estimación de precio por modelo XGBoost calibrado con datos de mercado colombiano. '
+        'El resultado es orientativo — consulta con un tasador certificado para decisiones de compra.'
         '</div>',
         unsafe_allow_html=True,
     )
+
+    with st.expander("ℹ️ ¿Cómo funciona la Valoración?", expanded=False):
+        st.markdown("""
+**Obtén una estimación del precio justo de un inmueble según el modelo de IA.**
+
+**Cómo usarla:**
+1. **Ficha técnica** — Ingresa el área (m²), habitaciones, baños y garajes del inmueble.
+2. **Ubicación** — Selecciona ciudad y, si conoces la zona, elige la Zona / Sector correspondiente. Mientras más específica la zona, más precisa la estimación.
+3. **Tipo** — Apartamento, casa, oficina, etc. y si es nuevo o usado.
+4. **Calcular** — Haz clic en el botón. El modelo devuelve el precio estimado, el rango de confianza (±MAPE) y la señal respecto al precio que tú ingreses.
+
+**¿Qué es el rango de confianza?**
+El modelo tiene un error promedio (MAPE) de ~21%. Eso significa que para un inmueble estimado en $500M, el precio real podría estar entre $395M y $605M. El rango se muestra junto al resultado.
+
+**¿Para qué sirve?**
+- Validar si el precio que te piden es razonable para la zona y tipo de inmueble.
+- Comparar propiedades similares en distintas zonas.
+- Calcular el margen de negociación potencial antes de hacer una oferta.
+        """)
 
     val1, val2 = st.columns([1, 1])
 
@@ -2291,10 +2405,15 @@ with tab4:
 
         if df is not None:
             ciudades_val = sorted(df["city_token"].unique())
+        elif gold_analitica is not None and not gold_analitica.empty and "city_token" in gold_analitica.columns:
+            ciudades_val = sorted(gold_analitica["city_token"].dropna().unique())
         elif search_meta:
             ciudades_val = sorted(search_meta.get("cities", []))
         else:
-            ciudades_val = ["bogota", "medellin", "cali"]
+            ciudades_val = ["armenia", "barrancabermeja", "barranquilla", "bogota", "bucaramanga",
+                            "cali", "cartagena", "cucuta", "ibague", "manizales", "medellin",
+                            "monteria", "neiva", "pasto", "pereira", "popayan", "santa marta",
+                            "tunja", "valledupar", "villavicencio"]
         v_ciudad = st.selectbox("Ciudad", ciudades_val,
                                  index=ciudades_val.index("bogota") if "bogota" in ciudades_val else 0)
         # Derivar mercado automáticamente
@@ -2312,30 +2431,57 @@ with tab4:
         )
 
         # ── Granularidad geográfica ──────────────────────────────────
-        df_ciudad = df[df["city_token"] == v_ciudad] if df is not None else pd.DataFrame()
-        if df is not None and "comuna_mercado" in df.columns:
-            comunas_disp = sorted([c for c in df_ciudad["comuna_mercado"].unique() if pd.notna(c) and c != "comuna_otra"])
-            v_comuna = st.selectbox("Comuna / Zona", ["comuna_otra"] + comunas_disp)
+        # Mapa ciudad → zonas disponibles en el Gold layer (derivado del parquet)
+        _ZONA_MAP = {
+            "armenia": ["calarca_zona", "centro_armenia", "el_bosque_armenia"],
+            "barrancabermeja": ["centro_barranca", "norte_barranca", "sur_barranca"],
+            "barranquilla": ["norte_centro", "puerto_colombia_zona", "riomar", "soledad_zona", "sur_occidente"],
+            "bogota": ["bosa_ciudad_bolivar", "cajica_zona", "centro_bogota", "chapinero", "chia_zona",
+                       "el_retiro_zona", "engativa", "kennedy_fontibon", "la_calera_zona", "mosquera_zona",
+                       "soacha_zona", "suba", "teusaquillo_barrios_unidos", "usaquen", "zipaquira_zona"],
+            "bucaramanga": ["cabecera", "centro_bucaramanga", "floridablanca_zona", "giron_zona",
+                            "piedecuesta_zona", "provenza_bucaramanga"],
+            "cali": ["centro_cali", "jamundi_zona", "norte_cali", "oeste_cali", "oriente_cali",
+                     "palmira_zona", "sur_cali", "yumbo_zona"],
+            "cartagena": ["bocagrande_castillogrande", "historico", "manga_crespo", "norte_residencial", "zona_norte"],
+            "cucuta": ["atalaya_zona", "caobos_cabecera", "centro_cucuta", "los_patios_zona", "villa_rosario_zona"],
+            "ibague": ["ambala_picaleña", "centro_ibague", "norte_ibague"],
+            "manizales": ["cable_millan", "centro_manizales", "palogrande_chipre", "villamaria_zona"],
+            "medellin": ["aranjuez_manrique", "belen_guayabal", "bello_zona", "buenos_aires_medellin",
+                         "centro_medellin", "el_poblado", "el_poblado_envigado", "itagui_zona",
+                         "laureles_estadio", "robledo_castilla", "sabaneta_zona"],
+            "monteria": ["castellana_zona", "centro_monteria", "sur_monteria"],
+            "neiva": ["centro_neiva", "norte_neiva"],
+            "pasto": ["centro_pasto", "norte_pasto"],
+            "pereira": ["centro_pereira", "cerritos_zona", "dosquebradas_zona", "el_poblado",
+                        "laureles_pereira", "pinares_cuba"],
+            "popayan": ["centro_popayan"],
+            "santa marta": ["bello_horizonte_zona", "centro_santa_marta", "norte_santa_marta", "rodadero"],
+            "tunja": ["centro_tunja", "norte_tunja", "sur_tunja"],
+            "villavicencio": ["barzal_centro", "norte_villavicencio", "sur_villavicencio"],
+        }
+        _zonas_ciudad = _ZONA_MAP.get(v_ciudad, [])
+        if _zonas_ciudad:
+            # Formato legible: kennedy_fontibon → Kennedy / Fontibón
+            _zona_labels = {z: z.replace("_", " ").replace("zona", "").strip().title() for z in _zonas_ciudad}
+            _zona_options = ["(ciudad completa)"] + _zonas_ciudad
+            _zona_display = ["(ciudad completa)"] + [_zona_labels[z] for z in _zonas_ciudad]
+            _zona_idx = st.selectbox(
+                "Zona / Sector",
+                options=range(len(_zona_options)),
+                format_func=lambda i: _zona_display[i],
+                help="Seleccionar zona mejora la precisión del modelo (usa estadísticas de precio del vecindario)"
+            )
+            v_comuna = _zona_options[_zona_idx] if _zona_idx > 0 else "comuna_otra"
         else:
             v_comuna = "comuna_otra"
-            
-        df_comuna = df_ciudad[df_ciudad["comuna_mercado"] == v_comuna] if v_comuna != "comuna_otra" else df_ciudad
-        v_sector = "sector_otra" # Simplificación UX sugerida por usuario
+            st.caption("Zona no disponible para esta ciudad — se usará promedio de la ciudad.")
+
+        v_sector = v_comuna  # sector_mercado comparte granularidad con comuna en el Gold
         
         v_tipo   = st.selectbox("Tipo", ["apartamento", "casa", "oficina", "local_comercial", "otro"])
         v_estado = st.selectbox("Estado", ["usado", "nuevo"])
 
-        st.markdown('<div class="section-label" style="margin-top:1rem">Imágenes (opcional)</div>',
-                    unsafe_allow_html=True)
-        imgs = st.file_uploader(
-            "Sube 1-5 fotos del inmueble para análisis de acabados",
-            type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=True,
-        )
-        if imgs:
-            cols_imgs = st.columns(min(len(imgs), 3))
-            for i, img in enumerate(imgs[:3]):
-                cols_imgs[i].image(img, width="stretch")
 
         btn_valorar = st.button("Generar valoración ◈")
 
@@ -2480,48 +2626,6 @@ with tab4:
 
                 except Exception as e:
                     st.error(f"Error en valoración: {e}")
-
-            # ── Análisis de imagen con LLM ───────────────────────
-            if imgs and llm_ready():
-                with st.spinner("Analizando acabados con IA..."):
-                    import base64
-                    img_contents = []
-                    for img in imgs[:3]:
-                        b64 = base64.b64encode(img.read()).decode()
-                        ext = img.name.split(".")[-1].lower()
-                        mime = f"image/{'jpeg' if ext in ('jpg','jpeg') else ext}"
-                        img_contents.append({"type": "image_url",
-                                              "image_url": {"url": f"data:{mime};base64,{b64}"}})
-
-                    img_contents.append({
-                        "type": "text",
-                        "text": (
-                            f"Analiza estas imágenes de un {v_tipo} en {v_ciudad.title()} Colombia "
-                            f"de {v_area}m², {v_habs} hab., {v_banos} baños. "
-                            "Describe: 1) Calidad de acabados (pisos, paredes, cocina, baños), "
-                            "2) Estado de conservación, "
-                            "3) Estimación de estrato socioeconómico (1-6), "
-                            "4) Si los acabados son consistentes con el rango de precio estimado. "
-                            "Sé concreto y objetivo. Máximo 150 palabras."
-                        )
-                    })
-
-                    try:
-                        analysis = call_llm([{"role": "user", "content": img_contents}])
-                        st.markdown('<div class="section-label" style="margin-top:1rem">Análisis de acabados (IA)</div>',
-                                    unsafe_allow_html=True)
-                        st.markdown(
-                            f'<div style="background:var(--surface2);border:1px solid var(--border);'
-                            f'border-left:4px solid var(--gold);padding:1rem;font-size:.85rem;'
-                            f'line-height:1.7;border-radius:0 2px 2px 0">{analysis}</div>',
-                            unsafe_allow_html=True,
-                        )
-                        st.caption(
-                            "⚠️ El análisis de imágenes es orientativo. "
-                            "El valor estimado proviene del modelo estadístico, no de las fotos."
-                        )
-                    except Exception as e:
-                        st.warning(f"Análisis de imagen no disponible: {e}")
 
         else:
             st.markdown(

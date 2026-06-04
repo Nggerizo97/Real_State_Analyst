@@ -3,20 +3,21 @@ api/schemas/search.py
 =====================
 Modelos Pydantic para /search y /markets.
 """
+import math
 from typing import Any, Dict, List, Optional
-import pandas as pd
+
 from pydantic import BaseModel, Field, field_validator
 
 
 class SearchRequest(BaseModel):
-    city_token: Optional[str] = None
-    market_token: Optional[str] = None
-    tipo_inmueble: Optional[str] = None
-    estado_inmueble: Optional[str] = None
+    city_token: Optional[str] = Field(None, max_length=64)
+    market_token: Optional[str] = Field(None, max_length=64)
+    tipo_inmueble: Optional[str] = Field(None, max_length=64)
+    estado_inmueble: Optional[str] = Field(None, max_length=32)
     price_min: Optional[float] = Field(None, ge=0)
-    price_max: Optional[float] = Field(None, ge=0)
+    price_max: Optional[float] = Field(None, ge=0, le=100_000_000_000)  # 100 B COP máx
     area_min: Optional[float] = Field(None, ge=0)
-    area_max: Optional[float] = Field(None)
+    area_max: Optional[float] = Field(None, ge=0, le=50_000)            # 50 000 m² máx
     habitaciones_min: Optional[int] = Field(None, ge=0)
     num_portales_min: Optional[int] = Field(None, ge=1)
     fuentes: Optional[List[str]] = None
@@ -38,6 +39,13 @@ class SearchRequest(BaseModel):
             "offset": 0,
         }
     }}
+
+    @field_validator("fuentes", mode="before")
+    @classmethod
+    def limit_fuentes_size(cls, v):
+        if v is not None and len(v) > 20:
+            raise ValueError("fuentes no puede tener más de 20 elementos")
+        return v
 
 
 class PropertyItem(BaseModel):
@@ -73,15 +81,14 @@ class PropertyItem(BaseModel):
     @field_validator("first_seen_date", mode="before")
     @classmethod
     def coerce_nat_to_none(cls, v):
-        """DuckDB/pandas puede devolver NaT para fechas nulas; Pydantic no lo acepta como str."""
+        """Convierte pandas NaT, NaN float y valores no-string a None."""
         if v is None:
             return None
-        # pandas NaT y numpy NaN
-        try:
-            if pd.isna(v):
-                return None
-        except (TypeError, ValueError):
-            pass
+        # Detectar pandas NaT sin importar pandas
+        if type(v).__name__ == "NaTType":
+            return None
+        if isinstance(v, float) and math.isnan(v):
+            return None
         return str(v) if not isinstance(v, str) else v
 
 
@@ -98,4 +105,5 @@ class MarketSummary(BaseModel):
     n_inmuebles: int
     precio_mediano: Optional[float] = None
     precio_m2_mediano: Optional[float] = None
+
     area_mediana: Optional[float] = None

@@ -3,22 +3,26 @@ api/schemas/predict.py
 ======================
 Modelos Pydantic para el endpoint /predict.
 """
-from typing import Optional
+from typing import Literal, Optional
+
 from pydantic import BaseModel, Field
+
+_TIPOS = Literal["apartamento", "casa", "lote", "oficina", "local_comercial", "otro"]
+_ESTADOS = Literal["usado", "nuevo", "desconocido"]
 
 
 class PredictRequest(BaseModel):
-    area_m2: float = Field(..., gt=0, description="Área construida en m²")
-    habitaciones: float = Field(2.0, ge=0)
-    banos: float = Field(1.0, ge=0)
-    garajes: float = Field(0.0, ge=0)
-    tipo_inmueble: str = Field("apartamento", description="apartamento | casa | lote | oficina | local_comercial | otro")
-    estado_inmueble: str = Field("usado", description="usado | nuevo | desconocido")
-    city_token: str = Field("bogota", description="token de ciudad normalizado (ej. 'medellin')")
-    market_token: Optional[str] = Field(None, description="Si no se envía, se deriva del city_token")
-    comuna_mercado: str = Field("comuna_otra")
-    sector_mercado: str = Field("sector_otra")
-    fuente: str = Field("manual_input")
+    area_m2: float = Field(..., gt=0, le=50_000, description="Área construida en m²")
+    habitaciones: float = Field(2.0, ge=0, le=30)
+    banos: float = Field(1.0, ge=0, le=20)
+    garajes: float = Field(0.0, ge=0, le=20)
+    tipo_inmueble: _TIPOS = Field("apartamento", description="Tipo de inmueble")
+    estado_inmueble: _ESTADOS = Field("usado", description="Estado del inmueble")
+    city_token: str = Field("bogota", max_length=64, description="Token de ciudad normalizado")
+    market_token: Optional[str] = Field(None, max_length=64)
+    comuna_mercado: str = Field("comuna_otra", max_length=64)
+    sector_mercado: str = Field("sector_otra", max_length=64)
+    fuente: str = Field("manual_input", max_length=64)
 
     model_config = {"json_schema_extra": {
         "example": {

@@ -15,14 +15,6 @@ data/
 *.csv
 *.parquet
 *.pkl
-# Frontend Streamlit (no necesario en la imagen de la API)
-app.py
-main.py
-style.css
-README.md
-requirements.txt
+# Archivos no necesarios en el container (pero requirements.txt SÍ se necesita para el Dockerfile raíz)
 requirements-scraper.txt
-runtime.txt
-docker-compose.yml
-docker-entrypoint.sh
 scripts/

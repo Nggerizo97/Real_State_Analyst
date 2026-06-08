@@ -23,16 +23,18 @@
 
 name: Terraform — ECS Infrastructure
 
-on:
-  push:
-    branches: [main]
-    paths:
-      - "infrastructure/**"          # solo si cambian archivos .tf
-  pull_request:
-    branches: [main]
-    paths:
-      - "infrastructure/**"
-  workflow_dispatch:                 # lanzar manualmente desde la UI de GitHub
+# Desactivado temporalmente para evitar costos de AWS.
+# on:
+#   push:
+#     branches: [main]
+#     paths:
+#       - "infrastructure/**"
+#   pull_request:
+#     branches: [main]
+#     paths:
+#       - "infrastructure/**"
+#   workflow_dispatch:
+
 
 permissions:
   contents: read

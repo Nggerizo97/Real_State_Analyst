@@ -14,11 +14,14 @@
 
 name: Build & Push to ECR
 
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:    # permite lanzar manualmente desde la UI de GitHub
+# Desactivado temporalmente para ahorrar costos de AWS.
+# on:
+#   push:
+#     branches:
+#       - main
+#   workflow_dispatch:
+
+
 
 env:
   AWS_REGION:          ${{ secrets.AWS_REGION || vars.AWS_REGION || 'us-east-1' }}

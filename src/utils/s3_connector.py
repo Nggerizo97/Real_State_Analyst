@@ -12,19 +12,38 @@ class S3Connector:
     """Clase wrapper para abstraer la comunicación con S3."""
     
     def __init__(self):
-        # Conexión usando credenciales de .env local (cargadas por python-dotenv)
-        # o, si no están, cae de vuelta a la configuración de sistema de la máquina o IAM Roles
-        if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+        # Fallback to Streamlit secrets if environment variables are empty
+        key_id = AWS_ACCESS_KEY_ID
+        secret_key = AWS_SECRET_ACCESS_KEY
+        region = AWS_REGION
+        bucket = S3_BUCKET_NAME
+
+        try:
+            import streamlit as st
+            if "aws" in st.secrets:
+                aws_sec = st.secrets["aws"]
+                if not key_id:
+                    key_id = aws_sec.get("aws_access_key_id")
+                if not secret_key:
+                    secret_key = aws_sec.get("aws_secret_access_key")
+                if not region:
+                    region = aws_sec.get("aws_region", "us-east-1")
+                if bucket == "real-state-data-bronze":  # default placeholder
+                    bucket = aws_sec.get("s3_bucket_name", bucket)
+        except Exception:
+            pass
+
+        if key_id and secret_key:
             self.s3_client = boto3.client(
                 's3',
-                aws_access_key_id=AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-                region_name=AWS_REGION
+                aws_access_key_id=key_id,
+                aws_secret_access_key=secret_key,
+                region_name=region
             )
         else:
-            self.s3_client = boto3.client('s3', region_name=AWS_REGION)
+            self.s3_client = boto3.client('s3', region_name=region or 'us-east-1')
             
-        self.bucket = S3_BUCKET_NAME
+        self.bucket = bucket
 
     def item_exists(self, key: str) -> bool:
         """Verifica si un objeto (identificado por key) existe en el bucket."""

@@ -341,6 +341,6 @@ def render_tab_finance(df_master):
                         "Área (m²)": "{:.0f}",
                         "Hab.": "{:.0f}"
                     }),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )

@@ -154,7 +154,7 @@ def render_tab_finance(df_master):
         )
     else:
         with st.expander("▸ Ajustar Filtros de Propiedad", expanded=True):
-            r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+            r1c1, r1c2, r1c3 = st.columns(3)
             with r1c1:
                 deps_disp = sorted(list(df_master["departamento"].dropna().unique()))
                 default_deps = [d for d in ["Bogotá D.C.", "Antioquia"] if d in deps_disp] or [deps_disp[0]]
@@ -179,19 +179,6 @@ def render_tab_finance(df_master):
                     key="filter_municipio"
                 )
             with r1c3:
-                # Filtrar sectores por depto y ciudad seleccionados
-                df_temp_sec = df_temp_mun.copy()
-                if municipio_sel:
-                    df_temp_sec = df_temp_sec[df_temp_sec["municipio"].isin(municipio_sel)]
-                sec_disp = sorted(list(df_temp_sec["sector"].dropna().unique()))
-                sector_sel = st.multiselect(
-                    "Sector / Barrio", 
-                    options=sec_disp, 
-                    default=[],
-                    help="Si se deja vacío, se simularán todos los sectores.",
-                    key="filter_sector"
-                )
-            with r1c4:
                 tipos_disp = list(df_master["tipo_inmueble"].unique())
                 tipo_sel = st.multiselect(
                     "Tipo de Inmueble", 
@@ -250,8 +237,6 @@ def render_tab_finance(df_master):
             df_filtered = df_filtered[df_filtered["departamento"].isin(departamento_sel)]
         if municipio_sel:
             df_filtered = df_filtered[df_filtered["municipio"].isin(municipio_sel)]
-        if sector_sel:
-            df_filtered = df_filtered[df_filtered["sector"].isin(sector_sel)]
         if tipo_sel:
             df_filtered = df_filtered[df_filtered["tipo_inmueble"].isin(tipo_sel)]
         if habs_min:
@@ -324,7 +309,7 @@ def render_tab_finance(df_master):
                     f'padding:1.1rem;border-radius:4px;margin-bottom:1rem;min-height:245px;'
                     f'display:flex;flex-direction:column;justify-content:space-between">'
                     f'  <div>'
-                    f'    <div style="font-size:.62rem;color:var(--gold);text-transform:uppercase;letter-spacing:1px;font-weight:bold;margin-bottom:.3rem">{ciudad_str} · {barrio_str}</div>'
+                    f'    <div style="font-size:.62rem;color:var(--gold);text-transform:uppercase;letter-spacing:1px;font-weight:bold;margin-bottom:.3rem">{ciudad_str}</div>'
                     f'    <div style="font-size:.82rem;font-weight:bold;color:white;margin-bottom:.5rem;line-height:1.3">{titulo_short}</div>'
                     f'    <div style="font-size:1.15rem;font-weight:800;color:var(--gold);margin-bottom:.6rem">{precio_str}</div>'
                     f'    <div style="font-size:.72rem;color:var(--muted);margin-bottom:.8rem">'
@@ -347,8 +332,8 @@ def render_tab_finance(df_master):
             st.markdown("<br>", unsafe_allow_html=True)
             # Mostrar tabla detallada completa abajo
             with st.expander("▸ Ver listado completo en formato tabla", expanded=False):
-                df_table = df_filtered[["titulo", "municipio", "sector", "precio_num", "area_m2", "habitaciones", "fuente"]].copy()
-                df_table.columns = ["Título", "Ciudad / Municipio", "Sector / Barrio", "Precio (COP)", "Área (m²)", "Hab.", "Portal Fuente"]
+                df_table = df_filtered[["titulo", "municipio", "precio_num", "area_m2", "habitaciones", "fuente"]].copy()
+                df_table.columns = ["Título", "Ciudad / Municipio", "Precio (COP)", "Área (m²)", "Hab.", "Portal Fuente"]
                 
                 st.dataframe(
                     df_table.style.format({

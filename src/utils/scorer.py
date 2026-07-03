@@ -112,58 +112,65 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
         X = r[feature_cols].copy()
 
         # 5. Predicción Safe-Load
-        preprocessor = None
-        preprocessor_blob = bundle.get("preprocessor_pickle")
-        if preprocessor_blob:
-            try:
-                # El bundle JSON almacena el pickle codificado en latin1
-                if isinstance(preprocessor_blob, str):
-                    preprocessor_blob = preprocessor_blob.encode('latin1')
-                preprocessor = pickle.loads(preprocessor_blob)
-            except Exception as e:
-                unpickle_error = str(e)
-                print(f"Error unpickling preprocessor: {e}")
-                pass
-        
+        # 5a. Recuperar preprocesador (prioridad: _preprocessor ya deserializado por model_loader)
+        preprocessor = bundle.get("_preprocessor")
+
+        if preprocessor is None:
+            preprocessor_blob = bundle.get("preprocessor_pickle")
+            if preprocessor_blob:
+                try:
+                    # El bundle JSON almacena el pickle codificado en latin1
+                    if isinstance(preprocessor_blob, str):
+                        preprocessor_blob = preprocessor_blob.encode('latin1')
+                    preprocessor = pickle.loads(preprocessor_blob)
+                except Exception as e:
+                    unpickle_error = str(e)
+                    print(f"Error unpickling preprocessor: {e}")
+
         if preprocessor is None:
             old_pipe = bundle.get("model")
-            if hasattr(old_pipe, 'named_steps'): preprocessor = old_pipe.named_steps.get('preprocessor')
+            if hasattr(old_pipe, 'named_steps'):
+                preprocessor = old_pipe.named_steps.get('preprocessor')
 
-        model_json = bundle.get("model_json")
-        if model_json:
-            bst = xgb.Booster()
-            if isinstance(model_json, str):
-                try:
-                    import base64
-                    model_json = base64.b64decode(model_json)
-                except:
+        # 5b. Recuperar Booster (prioridad: ya cargado por model_loader → raw model_json)
+        bst = None
+        model_obj = bundle.get("model")
+        if isinstance(model_obj, xgb.Booster):
+            bst = model_obj
+
+        if bst is None:
+            model_json = bundle.get("model_json")
+            if model_json:
+                bst = xgb.Booster()
+                # model_json es JSON plano de XGBoost, NO base64
+                if isinstance(model_json, str):
                     model_json = model_json.encode('utf-8')
-            bst.load_model(bytearray(model_json))
-            
+                bst.load_model(bytearray(model_json))
+
+        if bst is not None:
             # Intento de recuperación final del preprocesador
             if not preprocessor:
-                # Buscar en otras llaves posibles
                 for k in ["preprocessor", "transformer", "proc"]:
                     if k in bundle:
                         preprocessor = bundle[k]
                         break
-            
+
             if not preprocessor:
                 avail_keys = list(bundle.keys())
                 err_ext = f" Error unpickling: {unpickle_error}" if 'unpickle_error' in locals() else ""
                 raise ValueError(f"Preprocesador no disponible.{err_ext} Llaves en bundle: {avail_keys}")
-            
+
             X_proc = preprocessor.transform(X)
             precio_pred = bst.predict(xgb.DMatrix(X_proc))
-            precio_pred = np.expm1(precio_pred) # Inverse Log
-            
+            precio_pred = np.expm1(precio_pred)  # Inverse Log
+
             if strategy == "residual":
                 precio_pred = precio_pred * r["precio_estimado_segmento_area_ajustado"].fillna(gpm).to_numpy()
         else:
             pipeline = bundle.get("model")
             if not pipeline: raise ValueError("No hay modelo disponible.")
             precio_pred = pipeline.predict(X)
-            if strategy == "residual" or "Residual" in str(type(pipeline)): # v8 unified fallback
+            if strategy == "residual" or "Residual" in str(type(pipeline)):  # v8 unified fallback
                 precio_pred = precio_pred * r["precio_estimado_segmento_area_ajustado"].fillna(gpm).to_numpy()
 
         df["precio_predicho"] = precio_pred.astype("float32")

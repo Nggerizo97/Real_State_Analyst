@@ -205,6 +205,10 @@ def api_search(
             "price_max": price_max,
             "limit": limit,
             "offset": offset,
+            # Respeta el interruptor "Solo avisos vigentes" de la barra
+            # lateral. El backend filtra en DuckDB, así que los avisos
+            # retirados ni siquiera viajan por la red.
+            "solo_vigentes": bool(st.session_state.get("solo_vigentes", True)),
         }
         if cities and token:
             payload["city_token"] = token
@@ -514,6 +518,19 @@ def _s3_read_gold(table_name: str) -> pd.DataFrame | None:
                 "comuna_mercado", "sector_mercado", "num_portales", "dispersion_pct_grupo",
                 "precio_min_grupo", "precio_max_grupo", "precio_m2", "precio_predicho",
                 "score_inversion", "first_seen_date", "precio_cambio_pct",
+                # ubicacion_raw conserva el texto completo del portal (barrio
+                # incluido); ubicacion_norm por sí sola pierde granularidad al
+                # resolver la geografía.
+                "ubicacion_raw",
+                # fecha_extraccion es imprescindible para el ciclo de vida: sin
+                # ella no se puede saber qué avisos siguen publicados.
+                "fecha_extraccion",
+                # Columnas que el ETL escribe tras la migración a DIVIPOLA.
+                # Si aún no existen, el filtro de abajo simplemente las omite.
+                "cod_dpto", "departamento", "cod_mpio", "municipio",
+                "cod_barrio", "barrio", "barrio_texto", "latitud", "longitud",
+                "geo_match_level", "geo_confidence",
+                "listing_status", "is_active", "dias_sin_ver",
             ]
             cols_to_load = [c for c in ui_cols if c in all_cols]
         elif "mercado_analitica" in table_name:
@@ -764,6 +781,88 @@ def _enrich_market_token(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(show_spinner="Resolviendo geografía oficial (DIVIPOLA)...", ttl=3600)
+def _resolve_geo_pairs(pairs: tuple) -> pd.DataFrame:
+    """Resuelve municipio/barrio/coordenadas para pares únicos ubicación+título.
+
+    Se cachea sobre las combinaciones distintas, no sobre las filas: hay
+    ~75.000 filas pero muchas menos ubicaciones diferentes.
+    """
+    from src.geo.geo_resolver import get_resolver
+
+    resolver = get_resolver()
+    frame = pd.DataFrame([resolver.resolve(u, t) for u, t in pairs])
+    frame["_ubicacion"] = [p[0] for p in pairs]
+    frame["_titulo"] = [p[1] for p in pairs]
+    return frame
+
+
+def _enrich_geo_divipola(df: pd.DataFrame) -> pd.DataFrame:
+    """Añade departamento/municipio/barrio oficiales y coordenadas.
+
+    Sustituye la geografía derivada de `city_token`, que venía de un
+    diccionario de 52 ciudades escrito a mano y dejaba `comuna_mercado` en
+    "comuna_otra" para el 42,5% del catálogo, además de llenar
+    `sector_mercado` con fragmentos sin sentido ("en", "d c en", "en en").
+    Con DIVIPOLA son 1.122 municipios, códigos DANE y lat/lon reales.
+    """
+    if "municipio" in df.columns and df["municipio"].notna().any():
+        if "barrio_display" not in df.columns:
+            df["barrio_display"] = df.get("barrio")
+            if "barrio_texto" in df.columns:
+                df["barrio_display"] = df["barrio_display"].fillna(df["barrio_texto"])
+        return df
+
+    ubicacion = df.get("ubicacion_raw", df.get("ubicacion_norm", pd.Series("", index=df.index)))
+    titulo = df.get("titulo", pd.Series("", index=df.index))
+    pairs = list(dict.fromkeys(zip(ubicacion.astype(str), titulo.astype(str))))
+    if not pairs:
+        return df
+
+    resolved = _resolve_geo_pairs(tuple(pairs))
+    df = df.copy()
+    df["_ubicacion"] = ubicacion.astype(str)
+    df["_titulo"] = titulo.astype(str)
+    df = df.merge(resolved, on=["_ubicacion", "_titulo"], how="left", suffixes=("", "_geo"))
+    df = df.drop(columns=["_ubicacion", "_titulo"])
+
+    df["barrio_display"] = df["barrio"].fillna(df["barrio_texto"])
+    # El ETL escribe latitud/longitud; el resolver devuelve lat/lon.
+    for source, target in (("lat", "latitud"), ("lon", "longitud")):
+        if source in df.columns:
+            df[target] = df[target].fillna(df[source]) if target in df.columns else df[source]
+    return df
+
+
+def _apply_listing_lifecycle(df: pd.DataFrame) -> pd.DataFrame:
+    """Marca qué avisos siguen publicados, sin borrar el histórico.
+
+    El histórico completo se conserva para el modelo; lo que cambia es que
+    la interfaz puede filtrar por `is_active` y dejar de publicar enlaces
+    que abren en "Este inmueble no está disponible".
+    """
+    from src.quality.listing_lifecycle import add_lifecycle_columns
+
+    if "is_active" not in df.columns and "fecha_extraccion" in df.columns:
+        df = add_lifecycle_columns(df)
+
+    # Cruce con la verificación de URLs (tools/verify_listing_urls.py)
+    if "url" in df.columns and "url_status" not in df.columns:
+        try:
+            health = _s3_read_gold("listing_url_health")
+            if health is not None and not health.empty:
+                df = df.merge(
+                    health[["url", "url_status"]].drop_duplicates("url"),
+                    on="url", how="left",
+                )
+                df["url_status"] = df["url_status"].fillna("sin_verificar")
+                if "is_active" in df.columns:
+                    df["is_active"] = df["is_active"] & (df["url_status"] != "muerta")
+        except Exception:
+            df["url_status"] = "sin_verificar"
+    return df
+
+
 def _clean_gold(df: pd.DataFrame) -> pd.DataFrame:
     ubi_col = "ubicacion_norm" if "ubicacion_norm" in df.columns else (
         "ubicacion_raw" if "ubicacion_raw" in df.columns else None
@@ -795,6 +894,10 @@ def _clean_gold(df: pd.DataFrame) -> pd.DataFrame:
 
     # Enriquecer con market_token
     df = _enrich_market_token(df)
+
+    # Geografía oficial DIVIPOLA y vigencia del aviso
+    df = _enrich_geo_divipola(df)
+    df = _apply_listing_lifecycle(df)
 
     for col in ["area_m2", "habitaciones", "banos", "garajes"]:
         if col not in df.columns:
@@ -1056,6 +1159,26 @@ with st.sidebar:
             f'<span style="color:white;font-family:DM Mono,monospace">{val}</span></div>',
             unsafe_allow_html=True,
         )
+    # ── Vigencia de los avisos ───────────────────────────────────
+    # El lakehouse conserva todo el histórico porque el modelo lo necesita,
+    # pero mostrarlo entero hacía que la interfaz publicara enlaces de
+    # inmuebles ya vendidos o retirados. Medido sobre la tabla real: solo el
+    # 8,3% de las filas se había visto en los últimos 14 días del crawl de su
+    # propio portal, y de las recientes un 11,2% ya devolvía "no disponible".
+    st.markdown(
+        '<hr style="border-color:rgba(255,255,255,.1);margin:.9rem 0">',
+        unsafe_allow_html=True,
+    )
+    st.session_state["solo_vigentes"] = st.toggle(
+        "Solo avisos vigentes",
+        value=st.session_state.get("solo_vigentes", True),
+        help=(
+            "Oculta los avisos que ya no aparecen en su portal de origen o cuya "
+            "URL fue verificada como retirada. Los datos se conservan para el "
+            "modelo; solo dejan de mostrarse."
+        ),
+    )
+
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Limpiar conversación y caché"):
         for k in ["messages", "chat_usage", "tab1_candidates", "master_db"]:

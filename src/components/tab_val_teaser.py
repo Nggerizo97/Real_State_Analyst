@@ -10,22 +10,44 @@ import pandas as pd
 import gc
 
 
-@st.cache_resource(show_spinner="Cargando modelo de valoración...")
-def _get_model_bundle():
-    """
-    Carga el bundle del modelo campeón desde S3.
-    Se ejecuta UNA sola vez por sesión de la app gracias a @st.cache_resource.
-    Retorna (bundle, manifest) o (None, {}) si falla.
+@st.cache_data(ttl=300, show_spinner=False)
+def _champion_key() -> str:
+    """Clave del modelo campeón según el manifest. Se consulta cada 5 min.
+
+    Es una lectura de pocos bytes y sirve de llave de caché para el bundle:
+    cuando el pipeline entrena un modelo nuevo, esta clave cambia y el bundle
+    se recarga solo.
     """
     try:
         from src.utils.model_loader import ModelLoader
-        loader = ModelLoader()
-        bundle, manifest = loader.load_latest_model()
+        return str(ModelLoader().get_manifest().get("champion_model_key", ""))
+    except Exception:
+        return ""
+
+
+@st.cache_resource(show_spinner="Cargando modelo de valoración...")
+def _load_bundle_for(champion_key: str):
+    """Carga el bundle. La clave del campeón entra como argumento a propósito.
+
+    Antes esto era @st.cache_resource sin argumento ni TTL: el bundle quedaba
+    fijo para toda la vida del proceso de Streamlit. Tras reentrenar, la app
+    seguía tasando con el modelo viejo — se veía la versión 033321 en pantalla
+    cuando el campeón real ya era 044143, y por eso una casa en El Retiro
+    salía en $322M en vez de ~$494M. Al pasar la clave como argumento,
+    un campeón nuevo produce una entrada de caché nueva.
+    """
+    try:
+        from src.utils.model_loader import ModelLoader
+        bundle, manifest = ModelLoader().load_latest_model()
         gc.collect()
         return bundle, manifest
-    except Exception as e:
-        print(f"[MODEL] Error cargando modelo: {e}")
+    except Exception as exc:
+        print(f"[MODEL] Error cargando modelo: {exc}")
         return None, {}
+
+
+def _get_model_bundle():
+    return _load_bundle_for(_champion_key())
 
 
 def _render_model_badge(manifest: dict):
@@ -113,6 +135,97 @@ def _render_result_card(result: dict):
     )
 
 
+def _render_barrio_block(result, stats_barrio, barrio, municipio, area, modelo_conoce_barrio):
+    """Comparables del barrio y, si hace falta, la valoración ajustada.
+
+    Se distinguen dos situaciones y se dicen en voz alta, porque cambian el
+    significado del número:
+
+    * El modelo ya incluye `barrio_key` como feature -> el valor de arriba ya
+      tiene el barrio dentro y aquí solo se muestran los comparables.
+    * El modelo todavía solo ve la ciudad -> se muestra además una estimación
+      ajustada por el factor del barrio, etiquetada como cálculo aparte y no
+      como salida del modelo.
+    """
+    if "error" in result:
+        return
+
+    if not barrio:
+        st.caption(
+            "Sin barrio seleccionado: la tasación corresponde al promedio del municipio."
+        )
+        return
+
+    if stats_barrio is None:
+        st.caption(f"Sin comparables suficientes en {barrio}.")
+        return
+
+    n = int(stats_barrio["n"])
+    pm2_barrio = float(stats_barrio["precio_m2_mediano"])
+    p25 = float(stats_barrio["precio_m2_p25"])
+    p75 = float(stats_barrio["precio_m2_p75"])
+    factor = float(stats_barrio["factor"])
+
+    st.markdown("<div style='height:.8rem'></div>", unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="section-label">Comparables en {barrio}</div>',
+        unsafe_allow_html=True,
+    )
+
+    cells = st.columns(3)
+    cells[0].metric("Inmuebles comparables", f"{n:,}")
+    cells[1].metric("Precio/m² mediano del barrio", f"${pm2_barrio:,.0f}")
+    cells[2].metric(
+        "Frente al municipio",
+        f"{(factor - 1) * 100:+.0f}%",
+        help=f"Mediana del barrio contra la mediana de {municipio}.",
+    )
+
+    # El simbolo $ se escapa: Streamlit interpreta $...$ como LaTeX y se comia
+    # los signos de peso, dejando "6,569,145 — 10,179,398 por m2" sin moneda.
+    st.caption(
+        f"Rango intercuartil del barrio: \\${p25:,.0f} — \\${p75:,.0f} por m². "
+        f"Para {area:,.0f} m² eso equivale a \\${p25 * area:,.0f} — \\${p75 * area:,.0f}."
+    )
+
+    # Aviso cuando el modelo se sale del rango real del barrio. Es la senal de
+    # que la valoracion no es fiable ahi: el modelo solo conoce el municipio y
+    # en barrios muy por encima o por debajo de su ciudad se queda corto.
+    pm2_modelo = result.get("precio_m2_pred", 0)
+    if pm2_modelo and (pm2_modelo < p25 * 0.75 or pm2_modelo > p75 * 1.25):
+        direccion = "por debajo" if pm2_modelo < p25 else "por encima"
+        st.warning(
+            f"El modelo estima \\${pm2_modelo:,.0f}/m², muy {direccion} del rango "
+            f"observado en {barrio} (\\${p25:,.0f} — \\${p75:,.0f}/m²). "
+            f"Toma la valoración con reserva: el modelo activo no distingue "
+            f"barrios dentro de {municipio}."
+        )
+
+    if modelo_conoce_barrio:
+        st.caption(
+            "El modelo activo incluye el barrio entre sus variables, así que la "
+            "valoración de arriba ya lo tiene en cuenta."
+        )
+        return
+
+    valor_ajustado = result["valor_predicho"] * factor
+    st.markdown(
+        f'<div style="background:var(--surface2);border:1px solid var(--border);'
+        f'border-left:4px solid #0891b2;padding:1rem 1.2rem;border-radius:4px;margin-top:.6rem">'
+        f'<div style="font-size:.65rem;color:rgba(255,255,255,.4);text-transform:uppercase;'
+        f'letter-spacing:.15em;margin-bottom:.3rem">Estimación ajustada por barrio</div>'
+        f'<div style="font-size:1.5rem;font-weight:900;color:white;font-family:DM Mono,monospace">'
+        f'${valor_ajustado:,.0f} <span style="font-size:.65rem;color:rgba(255,255,255,.4)">COP</span></div>'
+        f'<p style="font-size:.72rem;color:var(--muted);line-height:1.5;margin:.5rem 0 0">'
+        f'El modelo activo <strong>no</strong> usa el barrio como variable: solo llega al nivel de '
+        f'municipio. Esta cifra aplica sobre su resultado el factor {factor:.2f} observado en '
+        f'{barrio} ({n:,} comparables). No es una salida del modelo, es un ajuste con datos del '
+        f'catálogo. Al reentrenar con la variable de barrio, ambas cifras convergen.'
+        f'</p></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_no_model_card():
     """Muestra un mensaje informativo cuando no hay modelo disponible."""
     st.markdown(
@@ -152,7 +265,16 @@ def render_tab_val_teaser(df_master):
 
         # Departamento
         deps_disp = sorted(list(df_master["departamento"].dropna().unique()))
-        default_idx = deps_disp.index("Bogotá D.C.") if "Bogotá D.C." in deps_disp else 0
+        # DIVIPOLA escribe "Bogotá, D.c.", no "Bogotá D.C.". Con el nombre
+        # antiguo la busqueda fallaba y el selector abria en Amazonas, que es
+        # el primero alfabéticamente. Se busca por prefijo y se cae a la
+        # jurisdicción con más inmuebles, no al índice 0.
+        _preferidos = [d for d in deps_disp if str(d).lower().startswith("bogot")]
+        if _preferidos:
+            default_idx = deps_disp.index(_preferidos[0])
+        else:
+            _top = df_master["departamento"].value_counts()
+            default_idx = deps_disp.index(_top.index[0]) if len(_top) else 0
         t_depto = st.selectbox(
             "Departamento",
             options=deps_disp,
@@ -172,6 +294,34 @@ def render_tab_val_teaser(df_master):
         )
 
         t_ciudad = mun_mapping.get(t_municipio, "bogota")
+
+        # ── Barrio / sector ──────────────────────────────────────────
+        # El barrio es el factor que más mueve el precio dentro de una misma
+        # ciudad. Las opciones se limitan a barrios con comparables
+        # suficientes; con menos de 8 avisos la mediana es ruido.
+        from src.utils.barrio_stats import barrios_de, build_barrio_stats, lookup
+
+        barrio_stats = build_barrio_stats(df_master)
+        barrio_opciones = barrios_de(barrio_stats, t_municipio)
+
+        if barrio_opciones:
+            t_barrio = st.selectbox(
+                f"Barrio / sector ({len(barrio_opciones)} con comparables)",
+                options=["— Sin especificar —"] + barrio_opciones,
+                key="teaser_barrio",
+                help=(
+                    "Solo aparecen barrios con al menos 8 inmuebles comparables "
+                    "en el catálogo."
+                ),
+            )
+            if t_barrio == "— Sin especificar —":
+                t_barrio = ""
+        else:
+            t_barrio = ""
+            st.caption(
+                f"Sin barrios con comparables suficientes en {t_municipio}. "
+                "La tasación usará el promedio del municipio."
+            )
 
         t_tipo = st.selectbox(
             "Tipo de Propiedad",
@@ -212,12 +362,28 @@ def render_tab_val_teaser(df_master):
                     "data_completeness": 0.8,
                     "comuna_mercado": "comuna_otra",
                     "sector_mercado": "sector_otra",
+                    # barrio_key es la feature que usa el modelo reentrenado.
+                    # Si el bundle activo aún no la incluye, el scorer la
+                    # ignora y el ajuste empírico de abajo cubre el hueco.
+                    "barrio_key": f"{t_ciudad} | {t_barrio}" if t_barrio else "barrio_otro",
+                    "barrio": t_barrio,
+                    "municipio": t_municipio,
                 }
+
+                stats_barrio = lookup(barrio_stats, t_municipio, t_barrio) if t_barrio else None
+                if stats_barrio is not None:
+                    row["precio_m2_mediano_barrio"] = float(stats_barrio["precio_m2_mediano"])
+                    row["precio_estimado_barrio_area"] = float(t_area) * float(stats_barrio["precio_m2_mediano"])
+                    row["barrio_vs_ciudad_ratio"] = float(stats_barrio["factor"])
 
                 # Ejecutar predicción
                 from src.utils.scorer import score_single
                 result = score_single(row, bundle)
+
+                modelo_conoce_barrio = "barrio_key" in (bundle.get("feature_cols") or [])
                 _render_result_card(result)
+                _render_barrio_block(result, stats_barrio, t_barrio, t_municipio,
+                                     t_area, modelo_conoce_barrio)
         else:
             st.markdown(
                 '<div style="background:var(--surface2);border:1px solid var(--border);'

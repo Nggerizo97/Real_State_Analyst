@@ -21,6 +21,19 @@ class SearchRequest(BaseModel):
     habitaciones_min: Optional[int] = Field(None, ge=0)
     num_portales_min: Optional[int] = Field(None, ge=1)
     fuentes: Optional[List[str]] = None
+    # Geografía oficial DIVIPOLA (nombres, no tokens: llevan tildes y comas,
+    # por eso no pasan por _safe_token y viajan como parámetro ligado).
+    departamento: Optional[str] = Field(None, max_length=120)
+    municipio: Optional[str] = Field(None, max_length=120)
+    # Vigencia: por defecto solo avisos que siguen publicados.
+    solo_vigentes: bool = Field(
+        True,
+        description=(
+            "Si es True (por defecto) excluye avisos retirados del portal de "
+            "origen o con URL verificada como muerta. El histórico completo "
+            "sigue en el Gold para el modelo."
+        ),
+    )
     # Paginación
     limit: int = Field(50, ge=1, le=500)
     offset: int = Field(0, ge=0)
@@ -76,6 +89,20 @@ class PropertyItem(BaseModel):
     first_seen_date: Optional[str] = None
     precio_cambio_pct: Optional[float] = None
     url: Optional[str] = None
+    # Geografía oficial DIVIPOLA (DANE)
+    cod_dpto: Optional[str] = None
+    departamento: Optional[str] = None
+    cod_mpio: Optional[str] = None
+    municipio: Optional[str] = None
+    cod_barrio: Optional[str] = None
+    barrio: Optional[str] = None
+    barrio_texto: Optional[str] = None
+    latitud: Optional[float] = None
+    longitud: Optional[float] = None
+    # Ciclo de vida del aviso
+    listing_status: Optional[str] = None
+    is_active: Optional[bool] = None
+    dias_sin_ver: Optional[float] = None
     extra: Optional[Dict[str, Any]] = None
 
     @field_validator("first_seen_date", mode="before")

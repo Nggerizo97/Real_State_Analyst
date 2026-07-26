@@ -1,20 +1,25 @@
-"""
-app.py — Real Estate Analyst Colombia (Versión Light)
-======================================================
-Esta es una versión ligera diseñada para correr gratuitamente en Streamlit Cloud.
-Incluye modularización y componentes separados para un mejor mantenimiento y escalabilidad.
+# -*- coding: utf-8 -*-
+"""app.py — Real Estate Analyst Colombia
+
+Estructura:
+  · Un solo estado de filtros en la barra lateral, compartido por todas las
+    pestanas (src/utils/filters.py).
+  · Los datos se cargan una vez y se filtran por vista, en lugar de que cada
+    pestana arme su propio subconjunto.
+  · Por defecto solo se muestran avisos vigentes: los que ya no aparecen en
+    su portal se conservan en el lakehouse para el modelo, pero no se
+    publican como si fueran ofertas activas.
 """
 
 import os
 import warnings
+
 import dotenv
-dotenv.load_dotenv()
 import streamlit as st
 
-# Evitar advertencias molestas
+dotenv.load_dotenv()
 warnings.filterwarnings("ignore")
 
-# Configuración de página con look premium
 st.set_page_config(
     page_title="Real Estate Analyst — Colombia",
     page_icon="◈",
@@ -22,118 +27,136 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Cargar CSS personalizado
 if os.path.exists("style.css"):
-    with open("style.css") as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    with open("style.css", encoding="utf-8") as handle:
+        st.markdown(f"<style>{handle.read()}</style>", unsafe_allow_html=True)
 
-# Importaciones de utilidades y componentes del proyecto
-from src.utils.data_loader import load_inmuebles_data
-from src.utils.formatters import fmt_cop
-from src.components.tab_finance import render_tab_finance
-from src.components.tab_market import render_tab_market
-from src.components.tab_val_teaser import render_tab_val_teaser
+from src.utils.data_loader import load_demo_data, load_inmuebles_data  # noqa: E402
+from src.utils.filters import apply_filters, render_sidebar_filters  # noqa: E402
+from src.components.tab_explorer import render_tab_explorer  # noqa: E402
+from src.components.tab_finance import render_tab_finance  # noqa: E402
+from src.components.tab_market import render_tab_market  # noqa: E402
+from src.components.tab_val_teaser import render_tab_val_teaser  # noqa: E402
 
-# Carga de datos unificada
-df_master, source_name = load_inmuebles_data()
 
 # ══════════════════════════════════════════════════════════════════
-# SIDEBAR
+# CARGA DE DATOS
+# ══════════════════════════════════════════════════════════════════
+# Si S3 falla se dice explicitamente. La version anterior capturaba el error
+# y servia el dataset sintetico sin avisar, asi que la app podia estar
+# mostrando inmuebles inventados con enlaces que nunca resolvieron.
+
+df_master, source_name = None, None
+try:
+    df_master, source_name = load_inmuebles_data()
+except Exception as exc:
+    st.error(
+        "**No se pudo cargar el catálogo desde S3.**\n\n"
+        f"`{type(exc).__name__}: {exc}`\n\n"
+        "Revisa las credenciales en `.streamlit/secrets.toml` (sección `[aws]`) "
+        "y que la tabla `gold/app_inmuebles_scored/` exista."
+    )
+    if st.button("Continuar con datos de demostración"):
+        df_master, source_name = load_demo_data()
+        st.warning(
+            "Modo demostración: los inmuebles son sintéticos y sus enlaces no existen."
+        )
+    else:
+        st.stop()
+
+if df_master is None or df_master.empty:
+    st.warning(
+        "El catálogo quedó vacío. Si acabas de activar el filtro de vigencia, "
+        "puede que el ETL no haya corrido aún con las columnas de ciclo de vida."
+    )
+    st.stop()
+
+
+# ══════════════════════════════════════════════════════════════════
+# SIDEBAR — identidad, estado y filtros compartidos
 # ══════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown(
         '<div style="font-family:Playfair Display,serif;font-size:1.3rem;'
-        'font-weight:900;color:white;margin-bottom:.2rem">◈ REA Light</div>'
+        'font-weight:900;color:white;margin-bottom:.2rem">◈ REA</div>'
         '<div style="font-size:.62rem;letter-spacing:.15em;color:#b8935a;'
-        'text-transform:uppercase;margin-bottom:1.2rem">Real Estate Analyst · Colombia</div>',
+        'text-transform:uppercase;margin-bottom:1rem">Real Estate Analyst · Colombia</div>',
         unsafe_allow_html=True,
     )
-    
-    # Status de conexión
-    status_color = "#2a9b6a" if source_name == "S3 Live" else "#b8935a"
+
+    is_live = str(source_name).startswith("S3")
+    status_color = "#16a34a" if is_live else "#d97706"
     st.markdown(
-        f'<div style="display:inline-block;background:{status_color}22;border:1px solid {status_color};'
-        f'padding:.3rem .8rem;border-radius:2px;font-size:.7rem;color:{status_color};'
-        f'font-weight:bold;letter-spacing:1px;text-transform:uppercase;margin-bottom:1.5rem">'
-        f'🔌 Origen: {source_name}'
-        f'</div>',
-        unsafe_allow_html=True
+        f'<div style="display:inline-block;background:{status_color}22;'
+        f'border:1px solid {status_color};padding:.3rem .8rem;border-radius:2px;'
+        f'font-size:.68rem;color:{status_color};font-weight:bold;letter-spacing:.5px;'
+        f'margin-bottom:1rem">{source_name}</div>',
+        unsafe_allow_html=True,
     )
-    
-    # KPIs rápidos en el sidebar
-    st.markdown('<div class="section-label">Estadísticas del Catálogo</div>', unsafe_allow_html=True)
-    N_total = len(df_master)
-    N_ciudades = df_master["city_token"].nunique()
-    med_precio = df_master["precio_num"].median()
-    
-    # Indicador de modelo — solo verifica el manifest (no carga el modelo)
-    model_status = "Disponible ◈" if source_name == "S3 Live" else "Demo"
-    
-    for label, val in [
-        ("Inmuebles Activos", f"{N_total:,}"),
-        ("Ciudades Cubiertas", f"{N_ciudades}"),
-        ("Precio Mediano", f"${med_precio/1e6:.0f}M COP"),
-        ("Modelo IA", model_status),
-    ]:
-        st.markdown(
-            f'<div style="display:flex;justify-content:space-between;font-size:.78rem;'
-            f'padding:.22rem 0;border-bottom:1px solid rgba(255,255,255,.07)">'
-            f'<span style="color:rgba(255,255,255,.45)">{label}</span>'
-            f'<span style="color:white;font-family:DM Mono,monospace">{val}</span></div>',
-            unsafe_allow_html=True,
-        )
-        
+
+    filter_state = render_sidebar_filters(df_master)
+
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("Limpiar Caché local", key="btn_clear_cache"):
+    if st.button("Limpiar caché de datos", width="stretch"):
         st.cache_data.clear()
         st.rerun()
-        
+
     st.markdown(
-        '<div style="font-size:.62rem;color:rgba(255,255,255,.22);margin-top:2.5rem;line-height:1.6">'
-        'No constituye asesoría financiera certificada.<br>'
+        '<div style="font-size:.62rem;color:rgba(255,255,255,.22);margin-top:1.5rem;'
+        'line-height:1.6">No constituye asesoría financiera certificada.<br>'
         'Propiedades extraídas de portales inmobiliarios de acceso público.</div>',
         unsafe_allow_html=True,
     )
 
+
 # ══════════════════════════════════════════════════════════════════
-# HEADER & TICKER
+# CABECERA
 # ══════════════════════════════════════════════════════════════════
-modelo_ticker = "MODELO IA: ACTIVO" if source_name == "S3 Live" else "MODELO IA: MODO DEMO"
-ticker_txt = "  ·  ".join([
-    f"◈ {N_total:,} INMUEBLES DISPONIBLES",
-    f"PRECIO MEDIANO ${med_precio/1e6:.0f}M COP",
-    f"{N_ciudades} CIUDADES COLOMBIANAS",
-    modelo_ticker,
+df_view = apply_filters(df_master, filter_state)
+
+precio_mediano = df_view["precio_num"].median() if len(df_view) else 0
+n_municipios = df_view["municipio"].nunique() if "municipio" in df_view.columns else 0
+
+ticker = "  ·  ".join([
+    f"◈ {len(df_view):,} INMUEBLES EN LA SELECCIÓN",
+    f"PRECIO MEDIANO ${precio_mediano / 1e6:,.0f}M COP",
+    f"{n_municipios} MUNICIPIOS",
+    "GEOGRAFÍA OFICIAL DIVIPOLA · DANE",
 ])
-st.markdown(f'<div class="ticker">{ticker_txt}</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="ticker">{ticker}</div>', unsafe_allow_html=True)
 
-col_h, col_s = st.columns([3, 1])
-with col_h:
-    st.markdown('<div class="section-label">Plataforma Inmobiliaria — Versión Ultra-Light</div>', unsafe_allow_html=True)
-    st.title("Real Estate Analyst Colombia")
-    st.markdown(
-        f'<p style="color:var(--muted);font-size:.88rem;margin-top:-.5rem">'
-        f'Buscador optimizado y simulador financiero para corredores e inversionistas</p>',
-        unsafe_allow_html=True,
-    )
-
+st.markdown('<div class="section-label">Plataforma Inmobiliaria</div>', unsafe_allow_html=True)
+st.title("Real Estate Analyst Colombia")
+st.markdown(
+    '<p style="color:var(--muted);font-size:.88rem;margin-top:-.5rem">'
+    'Explorador de mercado, simulador financiero y valoración asistida por modelo</p>',
+    unsafe_allow_html=True,
+)
 st.markdown('<hr class="gold-rule">', unsafe_allow_html=True)
 
+
 # ══════════════════════════════════════════════════════════════════
-# TABS DEFINITION
+# PESTANAS
 # ══════════════════════════════════════════════════════════════════
-tab_finance, tab_market, tab_val_teaser = st.tabs([
-    "Simulador Financiero y Propiedades",
-    "Análisis de Mercados",
-    "Valoración IA (Premium Teaser)"
+tab_explorer, tab_finance, tab_market, tab_val = st.tabs([
+    "Explorador Interactivo",
+    "Simulador Financiero",
+    "Análisis de Mercado",
+    "Valoración IA",
 ])
 
-# Renders de cada tab usando componentes separados
+with tab_explorer:
+    render_tab_explorer(df_master)
+
 with tab_finance:
-    render_tab_finance(df_master)
+    render_tab_finance(df_view)
 
 with tab_market:
-    render_tab_market(df_master)
+    render_tab_market(df_view)
 
-with tab_val_teaser:
+with tab_val:
+    # La valoración recibe el catálogo completo, no la vista filtrada: es una
+    # herramienta de tasación puntual y sus selectores de departamento,
+    # municipio y barrio deben ofrecer todo el país aunque el explorador esté
+    # filtrado a una sola zona.
     render_tab_val_teaser(df_master)

@@ -153,41 +153,16 @@ def render_tab_finance(df_master):
             unsafe_allow_html=True
         )
     else:
+        # Los filtros geográficos y de tipología viven ahora en la barra
+        # lateral y aplican a todas las pestañas. Aquí solo quedan los
+        # controles propios de la simulación financiera.
+        st.caption(
+            "Departamento, municipio, barrio y tipo se ajustan en la barra lateral "
+            "y aplican a toda la aplicación."
+        )
+        departamento_sel, municipio_sel, tipo_sel = [], [], []
+
         with st.expander("▸ Ajustar Filtros de Propiedad", expanded=True):
-            r1c1, r1c2, r1c3 = st.columns(3)
-            with r1c1:
-                deps_disp = sorted(list(df_master["departamento"].dropna().unique()))
-                default_deps = [d for d in ["Bogotá D.C.", "Antioquia"] if d in deps_disp] or [deps_disp[0]]
-                departamento_sel = st.multiselect(
-                    "Filtrar por Departamento", 
-                    options=deps_disp, 
-                    default=default_deps,
-                    key="filter_departamento"
-                )
-            with r1c2:
-                # Filtrar ciudades por departamentos seleccionados
-                if departamento_sel:
-                    df_temp_mun = df_master[df_master["departamento"].isin(departamento_sel)]
-                else:
-                    df_temp_mun = df_master
-                mun_disp = sorted(list(df_temp_mun["municipio"].dropna().unique()))
-                municipio_sel = st.multiselect(
-                    "Ciudad / Municipio", 
-                    options=mun_disp, 
-                    default=[],
-                    help="Si se deja vacío, se simularán todas las ciudades del departamento.",
-                    key="filter_municipio"
-                )
-            with r1c3:
-                tipos_disp = list(df_master["tipo_inmueble"].unique())
-                tipo_sel = st.multiselect(
-                    "Tipo de Inmueble", 
-                    options=tipos_disp, 
-                    default=tipos_disp,
-                    format_func=lambda x: str(x).title(),
-                    key="filter_type"
-                )
-                
             r2c1, r2c2, r2c3 = st.columns([1, 1, 2])
             with r2c1:
                 habs_min = st.selectbox(
@@ -290,7 +265,10 @@ def render_tab_finance(df_master):
                 precio_val = row["precio_num"]
                 precio_str = fmt_cop(precio_val)
                 ciudad_str = str(row.get("municipio", "Municipio"))
-                barrio_str = str(row.get("sector", "Sector"))
+                # barrio_display viene del resolver DIVIPOLA (barrio oficial,
+                # o texto ya depurado). Reemplaza a la antigua columna "sector",
+                # que traia fragmentos sin sentido como "en" o "d c en".
+                barrio_str = str(row.get("barrio_display") or "Sin barrio")
                 url_target = str(row.get("url", "#"))
                 fuente_portal = str(row.get("fuente", "Portal")).replace("_", " ").title()
                 

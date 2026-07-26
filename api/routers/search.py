@@ -25,6 +25,12 @@ _ITEM_COLS = [
     "fuente", "rentabilidad_potencial", "estado_inversion", "num_portales",
     "dispersion_pct_grupo", "precio_min_grupo", "precio_max_grupo",
     "score_inversion", "precio_predicho", "first_seen_date", "precio_cambio_pct", "url",
+    # Geografía oficial DIVIPOLA que escribe el ETL. Las columnas que aún no
+    # existan se devuelven como NULL (ver construcción de col_list).
+    "cod_dpto", "departamento", "cod_mpio", "municipio",
+    "cod_barrio", "barrio", "barrio_texto", "latitud", "longitud",
+    # Ciclo de vida del aviso
+    "listing_status", "is_active", "dias_sin_ver",
 ]
 
 _SORTABLE = frozenset(["precio_num", "area_m2", "habitaciones", "score_inversion", "precio_predicho", "rentabilidad_potencial", "num_portales"])
@@ -102,6 +108,23 @@ def search(req: SearchRequest) -> SearchResponse:
         conditions.append(f"fuente IN ({placeholders})")
         params.extend(safe_fuentes)
 
+    if req.departamento:
+        conditions.append("departamento = ?")
+        params.append(req.departamento)
+
+    if req.municipio:
+        conditions.append("municipio = ?")
+        params.append(req.municipio)
+
+    # ── Vigencia del aviso ────────────────────────────────────────
+    # Por defecto solo se devuelven avisos que siguen publicados. El Gold
+    # conserva el histórico completo porque el modelo lo necesita, pero
+    # servirlo entero hacía que el frontend mostrara enlaces de inmuebles ya
+    # vendidos o retirados (la mediana del catálogo llevaba ~100 días sin
+    # verse en su portal de origen).
+    if req.solo_vigentes and "is_active" in available_cols:
+        conditions.append("is_active = TRUE")
+
     where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     order_col = req.order_by if req.order_by in _SORTABLE else "precio_num"
@@ -165,9 +188,28 @@ def search_metadata():
         tipos = ["apartamento", "casa", "lote", "local_comercial", "oficina"]
         fuentes = ["bancolombia_tu360", "ciencuadras", "ciencuadras_nuevo", "ciencuadras_usado", "facebook", "fincaraiz", "mercadolibre", "metrocuadrado", "properati"]
 
+        # Geografía oficial DIVIPOLA, si el ETL ya escribió esas columnas.
+        # Permite selectores en cascada departamento -> municipio en vez de la
+        # lista plana de city_token.
+        departamentos, municipios = [], []
+        if "departamento" in db.available_cols:
+            try:
+                departamentos = db.query_df(
+                    "SELECT DISTINCT departamento FROM inmuebles "
+                    "WHERE departamento IS NOT NULL ORDER BY departamento"
+                )["departamento"].tolist()
+                municipios = db.query_df(
+                    "SELECT DISTINCT departamento, municipio FROM inmuebles "
+                    "WHERE municipio IS NOT NULL ORDER BY departamento, municipio"
+                ).to_dict("records")
+            except Exception as exc:
+                logger.warning("No se pudieron listar departamentos/municipios: %s", exc)
+
         return {
             "cities": cities,
             "markets": markets,
+            "departamentos": departamentos,
+            "municipios": municipios,
             "tipos_inmueble": tipos,
             "fuentes": fuentes,
             "price_min": 50000000.0,

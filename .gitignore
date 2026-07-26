@@ -39,6 +39,14 @@ models/
 data/
 notebooks/.ipynb_checkpoints/
 
+# Excepcion: la dimension geografica DIVIPOLA SI debe viajar al repo.
+# Son ~480 KB de tabla de referencia estatica (33 departamentos, 1.122
+# municipios, 8.612 barrios con coordenadas), no un dataset de trabajo.
+# La regla '*.parquet' de arriba la estaba excluyendo, asi que en Streamlit
+# Cloud el resolver se quedaba sin dimension y no podia resolver geografia.
+!reference/geo/
+!reference/geo/*.parquet
+
 # Streamlit
 .streamlit/secrets.toml
 

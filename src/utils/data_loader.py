@@ -26,8 +26,34 @@ import os
 import pandas as pd
 import streamlit as st
 
-from src.geo.geo_resolver import get_resolver
-from src.quality.listing_lifecycle import add_lifecycle_columns
+# La capa geografica se importa de forma perezosa y tolerante a fallos.
+#
+# Antes se importaba arriba, con lo que cualquier problema en ese subarbol
+# (un modulo sin sincronizar, la dimension DIVIPOLA ausente porque .gitignore
+# excluia *.parquet, una dependencia que no instalo) tumbaba la app entera en
+# el `from src.utils.data_loader import ...` de app.py, con un ImportError
+# que Streamlit Cloud muestra censurado y sin pista de la causa.
+#
+# Ahora el catalogo se carga igual y solo se degrada el enriquecimiento
+# geografico, informando en pantalla que falta.
+_GEO_IMPORT_ERROR = None
+
+try:
+    from src.geo.geo_resolver import get_resolver
+except Exception as exc:                                  # pragma: no cover
+    get_resolver = None
+    _GEO_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+
+try:
+    from src.quality.listing_lifecycle import add_lifecycle_columns
+except Exception as exc:                                  # pragma: no cover
+    add_lifecycle_columns = None
+    _GEO_IMPORT_ERROR = _GEO_IMPORT_ERROR or f"{type(exc).__name__}: {exc}"
+
+
+def geo_import_error():
+    """Detalle del fallo al cargar la capa geografica, o None si todo bien."""
+    return _GEO_IMPORT_ERROR
 
 GOLD_TABLE = "gold/app_inmuebles_scored/"
 URL_HEALTH_TABLE = "gold/listing_url_health/"
@@ -90,6 +116,8 @@ def _resolve_geography(location_pairs: tuple) -> pd.DataFrame:
     Se cachea sobre los pares distintos, no sobre las filas: en la tabla real
     hay ~75.000 filas pero muchas menos combinaciones de ubicacion+titulo.
     """
+    if get_resolver is None:
+        raise RuntimeError(f"Capa geográfica no disponible: {_GEO_IMPORT_ERROR}")
     resolver = get_resolver()
     resolved = [resolver.resolve(ubicacion, titulo) for ubicacion, titulo in location_pairs]
     frame = pd.DataFrame(resolved)
@@ -162,6 +190,19 @@ def enrich_geography(df: pd.DataFrame) -> pd.DataFrame:
         df["barrio_display"] = _coalesce_geo(df, "barrio", "barrio_texto")
         return df
 
+    if get_resolver is None:
+        # Sin resolver no hay geografia, pero el catalogo debe seguir siendo
+        # usable: precios, areas y enlaces no dependen de esta capa.
+        st.warning(
+            "La capa geográfica no se pudo cargar, así que no hay municipio ni "
+            f"barrio en esta sesión. Detalle: `{_GEO_IMPORT_ERROR}`"
+        )
+        df = df.copy()
+        for column in ("departamento", "municipio", "barrio", "barrio_texto", "barrio_display"):
+            if column not in df.columns:
+                df[column] = None
+        return df
+
     ubicacion = df.get("ubicacion_raw", df.get("ubicacion_norm", pd.Series("", index=df.index)))
     titulo = df.get("titulo", pd.Series("", index=df.index))
     pairs = list(dict.fromkeys(zip(ubicacion.astype(str), titulo.astype(str))))
@@ -197,7 +238,11 @@ def load_inmuebles_data(include_inactive: bool = False):
         raise RuntimeError(f"La tabla {GOLD_TABLE} llego vacia.")
 
     # Vigencia del aviso
-    if "is_active" not in df.columns and "fecha_extraccion" in df.columns:
+    if (
+        "is_active" not in df.columns
+        and "fecha_extraccion" in df.columns
+        and add_lifecycle_columns is not None
+    ):
         df = add_lifecycle_columns(df)
 
     # Cruce con la verificacion de URLs, si el job ya corrio

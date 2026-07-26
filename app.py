@@ -31,7 +31,9 @@ if os.path.exists("style.css"):
     with open("style.css", encoding="utf-8") as handle:
         st.markdown(f"<style>{handle.read()}</style>", unsafe_allow_html=True)
 
-from src.utils.data_loader import load_demo_data, load_inmuebles_data  # noqa: E402
+from src.utils.data_loader import (  # noqa: E402
+    geo_import_error, load_demo_data, load_inmuebles_data,
+)
 from src.utils.filters import apply_filters, render_sidebar_filters  # noqa: E402
 from src.components.tab_explorer import render_tab_explorer  # noqa: E402
 from src.components.tab_finance import render_tab_finance  # noqa: E402
@@ -45,6 +47,21 @@ from src.components.tab_val_teaser import render_tab_val_teaser  # noqa: E402
 # Si S3 falla se dice explicitamente. La version anterior capturaba el error
 # y servia el dataset sintetico sin avisar, asi que la app podia estar
 # mostrando inmuebles inventados con enlaces que nunca resolvieron.
+
+# Si la capa geográfica no cargó, se dice aquí con el detalle exacto. Es el
+# fallo que en Streamlit Cloud aparecía como un ImportError censurado sin
+# indicar el módulo culpable.
+_geo_error = geo_import_error()
+if _geo_error:
+    st.error(
+        "**La capa geográfica (DIVIPOLA) no se pudo cargar.** "
+        "La app funciona, pero sin departamento, municipio ni barrio.\n\n"
+        f"`{_geo_error}`\n\n"
+        "Causa habitual en Streamlit Cloud: falta `reference/geo/*.parquet` "
+        "en el repositorio. Genéralo con `python tools/build_geo_dimension.py` "
+        "en lakehouse-repo, sincronízalo con `tools/sync_geo_to_app.py` y "
+        "confirma que `.gitignore` no lo excluya."
+    )
 
 df_master, source_name = None, None
 try:

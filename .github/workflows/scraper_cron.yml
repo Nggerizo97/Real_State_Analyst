@@ -177,7 +177,10 @@ jobs:
     # residencial, registrado con la etiqueta `mercadolibre`.
     #
     # Los pasos usan `shell: python` para funcionar igual en Windows, macOS y
-    # Linux. setup-python garantiza que Python >= 3.10 esté en el PATH.
+    # Linux. Requisito en la máquina: Python >= 3.10 de python.org en el PATH
+    # del runner. No se usa actions/setup-python: en Windows ejecuta setup.ps1,
+    # que falla con la ExecutionPolicy por defecto, y el python.exe de la
+    # Microsoft Store (alias en WindowsApps) el runner no lo encuentra.
     #
     # Si la máquina está apagada, el job queda en cola (hasta 24 h). No bloquea
     # el ETL: trigger-etl solo espera a los scrapers en la nube y los datos de
@@ -191,11 +194,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.10'
 
       - name: Prepare Python venv (persistente entre corridas)
         shell: python

@@ -44,7 +44,7 @@ FLUSH_EVERY = 10  # Páginas entre flushes a disco local
 CSV_FIELDS = [
     "id_inmueble", "titulo", "tipo_inmueble",
     "precio", "precio_num", "ubicacion",
-    "habitaciones", "banos", "area", "garajes",
+    "habitaciones", "banos", "area", "garajes", "estado_inmueble",
     "url", "portal", "fecha_extraccion",
 ]
 

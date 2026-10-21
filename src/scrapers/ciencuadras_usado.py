@@ -334,6 +334,7 @@ class CiencuadrasUsadoScraper(BaseScraper):
                 "area": area,
                 "garajes": garajes,
                 "url": f"{self.base_url}{href}",
+                "estado_inmueble": "usado",  # sección de compra usado
                 "portal": self.portal_name,
                 "fecha_extraccion": datetime.now().isoformat(timespec="seconds"),
             }

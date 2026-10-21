@@ -18,16 +18,22 @@ from src.scrapers.base_scraper import BaseScraper
 
 
 class MetrocuadradoScraper(BaseScraper):
-    def __init__(self):
-        super().__init__("metrocuadrado")
-        self.base_url = PORTALS_CONFIG[self.portal_name]["base_url"]
+    # Subclases (p. ej. proyectos nuevos) cambian la página de inicio, la
+    # fuente en S3, el prefijo del ID y el estado sin duplicar la extracción.
+    START_PATH = "/inmuebles/venta/?search=form"
+    ID_PREFIX = "MC"
+    ESTADO_INMUEBLE = ""  # vacío: lo infiere Silver
+
+    def __init__(self, portal_name: str = "metrocuadrado"):
+        super().__init__(portal_name)
+        self.base_url = PORTALS_CONFIG["metrocuadrado"]["base_url"]
 
     # ------------------------------------------------------------------
     # Navegación y paginación
     # ------------------------------------------------------------------
 
     def scrape_pages(self, page: Page, max_pages: int) -> None:
-        url = f"{self.base_url}/inmuebles/venta/?search=form"
+        url = f"{self.base_url}{self.START_PATH}"
 
         self.logger.info(f"MC — Cargando URL inicial: {url}")
 
@@ -209,7 +215,7 @@ class MetrocuadradoScraper(BaseScraper):
             )
 
             prop_data = {
-                "id_inmueble": f"MC-{property_id}",
+                "id_inmueble": f"{self.ID_PREFIX}-{property_id}",
                 "titulo": title,
                 "tipo_inmueble": property_type,
                 "precio": price_raw,
@@ -219,12 +225,13 @@ class MetrocuadradoScraper(BaseScraper):
                 "banos": banos,
                 "area": area,
                 "garajes": garajes,
+                "estado_inmueble": self.ESTADO_INMUEBLE,
                 "url": full_url,
                 "portal": self.portal_name,
                 "fecha_extraccion": datetime.now().isoformat(timespec="seconds"),
             }
 
-            return self.process_and_upload(prop_data, f"MC-{property_id}")
+            return self.process_and_upload(prop_data, f"{self.ID_PREFIX}-{property_id}")
 
         except Exception as e:
             self.logger.error(f"Error parseando tarjeta: {e}")
@@ -304,8 +311,10 @@ class MetrocuadradoScraper(BaseScraper):
 
     @staticmethod
     def _parse_title(title: str) -> tuple:
-        match = re.match(
-            r"^(\w+)\s+en\s+(?:Venta|Arriendo)[,\s]+(.+)$",
+        # search y no match: en proyectos el título lleva el nombre delante
+        # ("SENDEROS DEL COCOI - Apartamento en Venta, RICAURTE, Girardot").
+        match = re.search(
+            r"(\w+)\s+en\s+(?:Venta|Arriendo)[,\s]+(.+)$",
             title,
             re.IGNORECASE,
         )

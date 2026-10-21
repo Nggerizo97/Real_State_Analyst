@@ -14,8 +14,10 @@ habilitados en secuencia (útil para pruebas rápidas en desarrollo).
 """
 
 from src.scrapers.fincaraiz import FincaRaizScraper
+from src.scrapers.fincaraiz_proyectos import FincaRaizProyectosScraper
 from src.scrapers.mercadolibre import MercadoLibreScraper
 from src.scrapers.metrocuadrado import MetrocuadradoScraper
+from src.scrapers.metrocuadrado_proyectos import MetrocuadradoProyectosScraper
 from src.scrapers.ciencuadras_nuevo import CiencuadrasNuevoScraper
 from src.scrapers.ciencuadras_usado import CiencuadrasUsadoScraper
 from src.scrapers.properati import ProperatiScraper
@@ -31,8 +33,10 @@ logger = get_logger("RealStateMain")
 
 scraper_registry = {
     "fincaraiz": FincaRaizScraper,
+    "fincaraiz_proyectos": FincaRaizProyectosScraper,
     "mercadolibre": MercadoLibreScraper,
     "metrocuadrado": MetrocuadradoScraper,
+    "metrocuadrado_proyectos": MetrocuadradoProyectosScraper,
     "ciencuadras_nuevo": CiencuadrasNuevoScraper,
     "ciencuadras_usado": CiencuadrasUsadoScraper,
     "properati": ProperatiScraper,

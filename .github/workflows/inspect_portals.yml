@@ -1,0 +1,64 @@
+# .github/workflows/inspect_portals.yml
+#
+# Abre las páginas de scripts/inspect_targets.txt con el mismo navegador y red
+# (Cloudflare WARP) que los scrapers y escribe en el log lo que encontró:
+# URL final, selectores que matchean, enlaces de paginación/proyectos y el
+# HTML de una tarjeta. Sirve para ajustar scrapers sin abrir el portal a mano.
+#
+# Se ejecuta al hacer push de cambios a la lista de páginas o al script, y a mano.
+# No usa secrets ni escribe en S3.
+
+name: Inspect portals
+
+on:
+  push:
+    paths:
+      - scripts/inspect_targets.txt
+      - scripts/inspect_page.py
+      - .github/workflows/inspect_portals.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-scraper.txt
+          playwright install chromium --with-deps
+
+      - name: Setup Cloudflare WARP
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] \
+            https://pkg.cloudflareclient.com/ jammy main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -q && sudo apt-get install -y cloudflare-warp
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos mode proxy
+          warp-cli --accept-tos connect
+          for i in $(seq 1 12); do
+            curl -s --max-time 3 --proxy socks5h://127.0.0.1:40000 \
+              https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on" && break
+            sleep 5
+          done
+
+      - name: Inspect pages
+        env:
+          PROXY_URL: "socks5://127.0.0.1:40000"
+        run: python scripts/inspect_page.py --file scripts/inspect_targets.txt

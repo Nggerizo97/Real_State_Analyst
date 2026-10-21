@@ -19,9 +19,18 @@ from src.scrapers.base_scraper import BaseScraper
 
 
 class FincaRaizScraper(BaseScraper):
-    def __init__(self, listing_path: str = "/venta/casas-y-apartamentos"):
-        super().__init__("fincaraiz")
-        self.base_url = PORTALS_CONFIG[self.portal_name]["base_url"]
+    # Subclases (p. ej. proyectos nuevos) cambian la fuente en S3, el prefijo
+    # del ID y el estado del inmueble sin duplicar la extracción.
+    ID_PREFIX = "FR"
+    ESTADO_INMUEBLE = ""  # vacío: lo infiere Silver
+
+    def __init__(
+        self,
+        listing_path: str = "/venta/casas-y-apartamentos",
+        portal_name: str = "fincaraiz",
+    ):
+        super().__init__(portal_name)
+        self.base_url = PORTALS_CONFIG["fincaraiz"]["base_url"]
         self.listing_path = listing_path
 
     # ------------------------------------------------------------------
@@ -88,10 +97,12 @@ class FincaRaizScraper(BaseScraper):
             for card in cards:
                 self._extract_property(card)
 
-            # Verificar si hay página siguiente
+            # Verificar si hay página siguiente: enlace a .../pagina{N+1}. El
+            # botón de flecha no siempre trae texto '>' (en /proyectos-vivienda
+            # solo hay números), y sin esto el recorrido se cortaba en la p1.
             next_link = page.query_selector(
-                "a[href*=pagina]:has-text('>')"
-            )
+                f"a[href$='pagina{current_page + 1}']"
+            ) or page.query_selector("a[href*=pagina]:has-text('>')")
             if not next_link:
                 self.logger.info(
                     "No hay botón 'Siguiente'. Fin de la paginación."
@@ -162,7 +173,7 @@ class FincaRaizScraper(BaseScraper):
             )
 
             prop_data = {
-                "id_inmueble": f"FR-{property_id}",
+                "id_inmueble": f"{self.ID_PREFIX}-{property_id}",
                 "titulo": title,
                 "tipo_inmueble": property_type,
                 "precio": price_raw,
@@ -171,12 +182,13 @@ class FincaRaizScraper(BaseScraper):
                 "habitaciones": habitaciones,
                 "banos": banos,
                 "area": area,
+                "estado_inmueble": self.ESTADO_INMUEBLE,
                 "url": full_url,
                 "portal": self.portal_name,
                 "fecha_extraccion": datetime.now().isoformat(timespec="seconds"),
             }
 
-            self.process_and_upload(prop_data, f"FR-{property_id}")
+            self.process_and_upload(prop_data, f"{self.ID_PREFIX}-{property_id}")
 
         except Exception as e:
             self.logger.error(f"Error parseando inmueble: {e}")

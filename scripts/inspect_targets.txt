@@ -1,14 +1,9 @@
 # Páginas que inspecciona .github/workflows/inspect_portals.yml
 # Formato: URL ;; selectores extra (coma) ;; regex de enlaces a listar
 
-# --- Properati: slugs de ciudad nuevos y paginación por ruta (/venta/2)
-https://www.properati.com.co/s/bogota-d-c-colombia/apartamento/venta ;; article.snippet .title, article.snippet .price, article.snippet .location, article.snippet .properties__item, article.snippet a[href*='/detalle/'] ;; /venta/\d+
-https://www.properati.com.co/s/bogota-d-c-colombia/apartamento/venta/2 ;; article.snippet ;; /venta/\d+
+# --- Metrocuadrado proyectos: ¿mismo paginador (rc-pagination) y campos que /inmuebles/venta?
+https://www.metrocuadrado.com/proyectos/ ;; li.rc-pagination-next, li.rc-pagination-item, li.rc-pagination-item-active, .property-card__detail-title h2, .property-card__detail-price, pt-main-specs, div.property-card__container img[alt] ;; currentPage|page=
+https://www.metrocuadrado.com/inmuebles/venta/?search=form ;; li.rc-pagination-next, .property-card__detail-title h2, pt-main-specs ;; currentPage|page=
 
-# --- Fincaraíz: proyectos nuevos
-https://www.fincaraiz.com.co/proyectos-vivienda ;; div.listingBoxCard, a[href*='/proyectos-vivienda/'] ;; pagina|page=|proyectos-vivienda/[^/]+/[^/]+$
-https://www.fincaraiz.com.co/proyectos-vivienda/bogota/bogota-dc ;; div.listingBoxCard ;; pagina|page=
-
-# --- Metrocuadrado: proyectos nuevos
-https://www.metrocuadrado.com/proyectos/ ;; a[href*='/proyecto/'] ;; page|pagina|/proyecto/
-https://www.metrocuadrado.com/proyectos-vivienda-nueva/ ;; a[href*='/proyecto/'] ;; page|pagina|/proyecto/
+# --- Fincaraíz proyectos: specs de la tarjeta (en listados normales son span.lc-typologyTag__item)
+https://www.fincaraiz.com.co/proyectos-vivienda/pagina2 ;; span.lc-typologyTag__item, div.lc-typologyTag, strong.lc-location, h2.lc-title, p.main-price, a.lc-data ;; pagina\d+

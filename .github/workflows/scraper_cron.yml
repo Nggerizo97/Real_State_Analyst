@@ -165,6 +165,24 @@ jobs:
             # curl -X POST -d "{\"text\":\"$MSG\"}" ${{ secrets.SLACK_WEBHOOK }}
           fi
 
+  keepalive:
+    # GitHub deshabilita los workflows con `schedule` tras 60 días sin commits
+    # en el repo (estado "disabled_inactivity"). Llamar al endpoint `enable`
+    # en cada run reinicia ese contador, así el cron no se apaga solo.
+    name: Keep workflow enabled
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable this workflow (resets 60-day inactivity timer)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X PUT \
+            "repos/${{ github.repository }}/actions/workflows/scraper_cron.yml/enable"
+          echo "✅ Workflow keepalive OK"
+
   trigger-etl:
     name: Trigger Databricks ETL
     needs: scrape

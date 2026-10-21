@@ -59,6 +59,24 @@ _CANDIDATES_JS = """
 """
 
 
+# Elementos de una tarjeta con texto propio (no heredado de hijos): tag.clase | texto
+_FIELDS_JS = """
+e => {
+  const out = [];
+  for (const el of e.querySelectorAll('*')) {
+    const own = Array.from(el.childNodes)
+      .filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join(' ').trim();
+    if (!own) continue;
+    const cls = (typeof el.className === 'string' && el.className.trim())
+      ? '.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.') : '';
+    out.push([el.tagName.toLowerCase() + cls, own.slice(0, 80)]);
+    if (out.length >= 40) break;
+  }
+  return out;
+}
+"""
+
+
 def _parse_targets(path: Path):
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -121,9 +139,18 @@ def inspect(page, url: str, selectors, link_regex) -> None:
     if sample_sel:
         el = page.query_selector(sample_sel)
         if el:
-            html = re.sub(r"\s+", " ", el.evaluate("e => e.outerHTML"))
-            print(f"-- HTML de ejemplo ({sample_sel}), 2500 caracteres")
-            print("   " + html[:2500])
+            print(f"-- Tarjeta de ejemplo ({sample_sel})")
+            attrs = el.evaluate(
+                "e => Array.from(e.attributes).map(a => a.name + '=' + a.value.slice(0, 120))"
+            )
+            print(f"   atributos: {attrs}")
+            # Elementos internos con texto propio: de aquí salen los selectores
+            # de precio, ubicación, área, etc. (el outerHTML lo tapan las imágenes)
+            fields = el.evaluate(_FIELDS_JS)
+            for path, text in fields:
+                print(f"   {path:60s} | {text}")
+            links = el.evaluate("e => Array.from(e.querySelectorAll('a[href]')).map(a => a.href).slice(0, 5)")
+            print(f"   enlaces: {links}")
 
 
 def main() -> None:

@@ -1,13 +1,14 @@
 # Páginas que inspecciona .github/workflows/inspect_portals.yml
 # Formato: URL ;; selectores extra (coma) ;; regex de enlaces a listar
 
-# --- Properati: 4 de 5 ciudades devuelven 0 resultados y ?page=N no avanza
-https://www.properati.com.co ;; ;; /s/
-https://www.properati.com.co/s/bogota/apartamento/venta ;; ;; page|pagina|/s/
-https://www.properati.com.co/s/bogota/apartamento/venta?page=2 ;; ;; page|pagina
-https://www.properati.com.co/s/bucaramanga/apartamento/venta ;; ;; page|pagina|/\d+$
-https://www.properati.com.co/s/bucaramanga/apartamento/venta?page=2 ;; ;; page|pagina
+# --- Properati: slugs de ciudad nuevos y paginación por ruta (/venta/2)
+https://www.properati.com.co/s/bogota-d-c-colombia/apartamento/venta ;; article.snippet .title, article.snippet .price, article.snippet .location, article.snippet .properties__item, article.snippet a[href*='/detalle/'] ;; /venta/\d+
+https://www.properati.com.co/s/bogota-d-c-colombia/apartamento/venta/2 ;; article.snippet ;; /venta/\d+
 
-# --- Secciones de proyectos nuevos / sobre planos
-https://www.fincaraiz.com.co ;; ;; proyecto|nuevo|planos|estrenar
-https://www.metrocuadrado.com ;; ;; proyecto|nuevo|planos|estrenar
+# --- Fincaraíz: proyectos nuevos
+https://www.fincaraiz.com.co/proyectos-vivienda ;; div.listingBoxCard, a[href*='/proyectos-vivienda/'] ;; pagina|page=|proyectos-vivienda/[^/]+/[^/]+$
+https://www.fincaraiz.com.co/proyectos-vivienda/bogota/bogota-dc ;; div.listingBoxCard ;; pagina|page=
+
+# --- Metrocuadrado: proyectos nuevos
+https://www.metrocuadrado.com/proyectos/ ;; a[href*='/proyecto/'] ;; page|pagina|/proyecto/
+https://www.metrocuadrado.com/proyectos-vivienda-nueva/ ;; a[href*='/proyecto/'] ;; page|pagina|/proyecto/

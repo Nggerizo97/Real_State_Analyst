@@ -19,7 +19,8 @@ import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
+from urllib.parse import unquote, urlparse
 
 import pandas as pd
 from playwright.sync_api import Page, sync_playwright
@@ -136,6 +137,13 @@ class BaseScraper(ABC):
         self._csv_writer = None
         self._pages_since_flush = 0
 
+        # Bloqueo anti-bot: el portal redirigió a login/CAPTCHA.
+        # Si ocurre sin haber completado ninguna página, el run se reporta
+        # como fallido (exit_code != 0) en vez de terminar "OK" con 0 registros.
+        self.blocked = False
+        self.block_reason = ""
+        self.pages_scraped = 0
+
     # ------------------------------------------------------------------
     # Ciclo de vida principal
     # ------------------------------------------------------------------
@@ -165,8 +173,7 @@ class BaseScraper(ABC):
         width = random.choice([1280, 1366, 1440, 1920])
         height = random.choice([768, 800, 900, 1080])
 
-        proxy_url = os.getenv("PROXY_URL")
-        proxy_config = {"server": proxy_url} if proxy_url else None
+        proxy_config = self._proxy_config(os.getenv("PROXY_URL"))
 
         stealth = Stealth(
             navigator_languages_override=("es-CO", "es", "en-US", "en"),
@@ -213,6 +220,38 @@ class BaseScraper(ABC):
 
         # 4. Finalizar persistencia
         self._finalize_run()
+
+    @staticmethod
+    def _proxy_config(proxy_url: Optional[str]) -> Optional[Dict[str, str]]:
+        """Convierte PROXY_URL en la config de Playwright.
+
+        Chromium ignora user:pass embebidos en `server`, así que se separan
+        (necesario para proxies residenciales con autenticación).
+        """
+        if not proxy_url:
+            return None
+        parsed = urlparse(proxy_url)
+        if not parsed.username:
+            return {"server": proxy_url}
+        server = f"{parsed.scheme}://{parsed.hostname}"
+        if parsed.port:
+            server += f":{parsed.port}"
+        return {
+            "server": server,
+            "username": unquote(parsed.username),
+            "password": unquote(parsed.password or ""),
+        }
+
+    def mark_blocked(self, reason: str) -> None:
+        """Registra que el portal bloqueó la sesión (login wall, CAPTCHA...)."""
+        self.blocked = True
+        self.block_reason = reason
+        self.logger.error(f"[BLOCKED] {self.portal_name}: {reason}")
+
+    @property
+    def exit_code(self) -> int:
+        """0 = OK; 2 = bloqueado antes de completar cualquier página."""
+        return 2 if self.blocked and self.pages_scraped == 0 else 0
 
     def _load_hashes(self):
         self.logger.info("Cargando memoria de hashes...")
@@ -273,6 +312,7 @@ class BaseScraper(ABC):
     def on_page_done(self, page_num: int):
         """Llamar al terminar cada página para gestión de resiliencia."""
         self.current_page = page_num
+        self.pages_scraped += 1
         self._pages_since_flush += 1
         if self._pages_since_flush >= FLUSH_EVERY:
             self._flush_to_csv()

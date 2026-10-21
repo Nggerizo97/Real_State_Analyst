@@ -4,17 +4,24 @@ src/scrapers/mercadolibre.py
 Scraper de inmuebles en venta en MercadoLibre Colombia.
 
 URL base: https://listado.mercadolibre.com.co/inmuebles/venta/_NoIndex_True
-Pagina con click en "Siguiente" hasta agotar páginas o alcanzar el límite.
+Pagina por offset (_Desde_N) hasta agotar resultados o alcanzar el límite.
+
+MercadoLibre redirige a /gz/account-verification las IPs de datacenter
+(GitHub Actions, Cloudflare WARP). En ese caso el run se marca como
+bloqueado y el runner sale con código != 0. Para correrlo en CI hace falta
+una IP residencial: PROXY_URL apuntando a un proxy residencial o un
+self-hosted runner.
 """
 
 import re
-import time
 from datetime import datetime
 
 from playwright.sync_api import Page
 
 from config.settings import PORTALS_CONFIG
 from src.scrapers.base_scraper import BaseScraper
+
+_BLOCK_URL_MARKERS = ("account-verification", "loginType=", "/login")
 
 
 class MercadoLibreScraper(BaseScraper):
@@ -29,6 +36,8 @@ class MercadoLibreScraper(BaseScraper):
 
         # Warm-up: visit homepage before listings to appear as a natural user
         self._warmup(page)
+        if self.blocked:
+            return
 
         for current_page in range(self.start_page, end_page):
             if current_page == 1:
@@ -50,9 +59,9 @@ class MercadoLibreScraper(BaseScraper):
                 continue
 
             # Detect login wall / bot-detection redirect
-            if any(t in page.url for t in ("account-verification", "loginType=", "/login")):
-                self.logger.warning(
-                    f"Redirigido a verificación en página {current_page}: {page.url[:80]}"
+            if self._is_blocked_url(page.url):
+                self.mark_blocked(
+                    f"redirigido a verificación en página {current_page}: {page.url[:80]}"
                 )
                 break
 
@@ -61,7 +70,17 @@ class MercadoLibreScraper(BaseScraper):
             # Buscar tarjetas con selectores estables + fallback
             items = self._wait_for_items(page)
             if not items:
-                self.logger.info("Sin resultados o redirigido a CAPTCHA. Deteniendo paginación.")
+                # En la página 1 una lista vacía no es fin de resultados sino
+                # bloqueo/cambio de DOM. Si se retomó desde un checkpoint, puede
+                # ser que ML ya no tenga más páginas: se reinicia el ciclo.
+                if self.pages_scraped == 0 and self.start_page == 1:
+                    self.mark_blocked(
+                        f"sin resultados en la primera página ({page.url[:80]}) "
+                        "— posible CAPTCHA o cambio de DOM"
+                    )
+                else:
+                    self.logger.info("Sin resultados. Fin de la paginación.")
+                    self.checkpoint.clear()
                 break
 
             # --- DETECCIÓN DE FIN DE RESULTADOS ---
@@ -77,6 +96,7 @@ class MercadoLibreScraper(BaseScraper):
             current_ids_set = set(current_ids)
             if current_page > 1 and current_ids_set and current_ids_set.issubset(previous_page_ids):
                 self.logger.info("Detección de fin de resultados (Duplicate): Finalizando.")
+                self.checkpoint.clear()
                 break
             previous_page_ids = current_ids_set
             # --------------------------------------
@@ -87,6 +107,9 @@ class MercadoLibreScraper(BaseScraper):
 
             for item in items:
                 self._extract_property(item, page.url)
+
+            # Flush local cada 10 páginas + checkpoint en S3 para retomar
+            self.on_page_done(current_page)
 
             self.human_delay(page, 1500, 3000)
 
@@ -99,9 +122,16 @@ class MercadoLibreScraper(BaseScraper):
         try:
             self.logger.info("Warm-up: visitando homepage de MercadoLibre...")
             page.goto("https://www.mercadolibre.com.co", wait_until="domcontentloaded", timeout=30_000)
+            if self._is_blocked_url(page.url):
+                self.mark_blocked(f"redirigido a verificación en el warm-up: {page.url[:80]}")
+                return
             self.human_delay(page, 3000, 5000)
         except Exception as e:
             self.logger.warning(f"Warm-up falló (ignorando): {e}")
+
+    @staticmethod
+    def _is_blocked_url(url: str) -> bool:
+        return any(t in url for t in _BLOCK_URL_MARKERS)
 
     # ------------------------------------------------------------------
     # Espera de items con fallback
@@ -110,7 +140,7 @@ class MercadoLibreScraper(BaseScraper):
     def _wait_for_items(self, page: Page):
         """Espera y retorna los items con selector principal + fallback."""
         # Abort immediately if we're on a login/verification wall
-        if any(t in page.url for t in ("account-verification", "loginType=", "/login")):
+        if self._is_blocked_url(page.url):
             self.logger.warning("Login wall detectado (negative_traffic). Deteniendo.")
             return []
         try:
@@ -142,8 +172,12 @@ class MercadoLibreScraper(BaseScraper):
             title = title_el.inner_text().strip() if title_el else "N/A"
             href = title_el.get_attribute("href") if title_el else ""
 
-            # ID del inmueble (MCO-123456)
+            # ID del inmueble (MCO-123456). Sin ID estable no se puede
+            # deduplicar (SCD2) ni cruzar con Silver: se descarta.
             id_attr = self._extract_id(href)
+            if not id_attr:
+                self.logger.debug(f"Tarjeta sin ID MCO, se omite: {href[:80]}")
+                return
 
             # Tipo de inmueble (Casa, Apartamento, Lote...)
             headline_el = element.query_selector(
@@ -208,8 +242,6 @@ class MercadoLibreScraper(BaseScraper):
 
     @staticmethod
     def _extract_id(href: str) -> str:
-        """Extrae MCO-123456 de la URL de MercadoLibre."""
-        if not href:
-            return str(int(time.time() * 1000))
-        match = re.search(r"(MCO-?\d+)", href)
-        return match.group(1) if match else str(int(time.time() * 1000))
+        """Extrae MCO-123456 de la URL de MercadoLibre ('' si no hay)."""
+        match = re.search(r"(MCO-?\d+)", href or "")
+        return match.group(1) if match else ""

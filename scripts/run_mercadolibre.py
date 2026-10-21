@@ -53,6 +53,10 @@ def main() -> None:
                 f"{r.get('location', '?')[:40]}"
             )
 
+    if scraper.exit_code:
+        print(f"\n❌ mercadolibre bloqueado: {scraper.block_reason}", file=sys.stderr)
+    sys.exit(scraper.exit_code)
+
 
 if __name__ == "__main__":
     main()

@@ -45,10 +45,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python 3.10
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -82,7 +82,7 @@ jobs:
           pip install playwright
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
@@ -125,7 +125,10 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
-          PROXY_URL: "socks5://127.0.0.1:40000"
+          # MercadoLibre bloquea IPs de datacenter (incluida WARP). Si existe el
+          # secret MERCADOLIBRE_PROXY_URL (proxy residencial, admite
+          # http://user:pass@host:port) se usa ese; si no, WARP.
+          PROXY_URL: ${{ (matrix.scraper == 'mercadolibre' && secrets.MERCADOLIBRE_PROXY_URL) || 'socks5://127.0.0.1:40000' }}
         run: |
           PAGES=${{ github.event.inputs.pages || matrix.pages }}
           echo "Starting ${{ matrix.scraper }} (max_pages=$PAGES)..."
@@ -164,11 +167,37 @@ jobs:
             echo "$MSG"
             # curl -X POST -d "{\"text\":\"$MSG\"}" ${{ secrets.SLACK_WEBHOOK }}
           fi
+          # Un scraper bloqueado (exit != 0) deja el job en rojo para que no
+          # pase semanas "OK" con 0 registros. El ETL corre igual (needs != cancelled).
+          if [ "$EXIT" -ne 0 ]; then
+            echo "::error title=Scraper ${{ matrix.scraper }} falló::exit=$EXIT — revisa el log del paso 'Run scraper'"
+            exit 1
+          fi
+
+  keepalive:
+    # GitHub deshabilita los workflows con `schedule` tras 60 días sin commits
+    # en el repo (estado "disabled_inactivity"). Llamar al endpoint `enable`
+    # en cada run reinicia ese contador, así el cron no se apaga solo.
+    name: Keep workflow enabled
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable this workflow (resets 60-day inactivity timer)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X PUT \
+            "repos/${{ github.repository }}/actions/workflows/scraper_cron.yml/enable"
+          echo "✅ Workflow keepalive OK"
 
   trigger-etl:
     name: Trigger Databricks ETL
     needs: scrape
-    if: ${{ needs.scrape.result != 'cancelled' }}
+    # !cancelled() en vez de solo needs.result: sin función de estado GitHub
+    # agrega success() implícito y un scraper fallido saltaría el ETL.
+    if: ${{ !cancelled() && needs.scrape.result != 'cancelled' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
 

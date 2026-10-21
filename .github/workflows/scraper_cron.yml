@@ -173,14 +173,18 @@ jobs:
 
   scrape-mercadolibre:
     # MercadoLibre redirige las IPs de datacenter (runners de GitHub y WARP) a
-    # /gz/account-verification. Este job corre en un self-hosted runner con IP
-    # residencial, registrado con la etiqueta `mercadolibre`.
+    # /gz/account-verification. Este job corre en un self-hosted runner Windows
+    # con IP residencial, registrado con la etiqueta `mercadolibre`.
     #
-    # Los pasos usan `shell: python` para funcionar igual en Windows, macOS y
-    # Linux. Requisito en la máquina: Python >= 3.10 de python.org en el PATH
-    # del runner. No se usa actions/setup-python: en Windows ejecuta setup.ps1,
-    # que falla con la ExecutionPolicy por defecto, y el python.exe de la
-    # Microsoft Store (alias en WindowsApps) el runner no lo encuentra.
+    # Por qué `shell: cmd` y no `shell: python` / setup-python / PowerShell:
+    # - `shell: python` exige que el runner encuentre `python` en SU PATH antes
+    #   de ejecutar nada. Como servicio corre con NETWORK SERVICE: no ve el PATH
+    #   del usuario, no puede leer C:\Users\<user>\AppData (Python instalado
+    #   "solo para mí") y un servicio no ve cambios del PATH hasta reiniciar.
+    # - actions/setup-python ejecuta setup.ps1, bloqueado por la
+    #   ExecutionPolicy por defecto de Windows (igual que `shell: powershell`).
+    # "Locate Python" busca el intérprete por ruta, sin depender del PATH, y
+    # si no lo encuentra imprime con qué cuenta corre el runner y qué hacer.
     #
     # Si la máquina está apagada, el job queda en cola (hasta 24 h). No bloquea
     # el ETL: trigger-etl solo espera a los scrapers en la nube y los datos de
@@ -195,30 +199,52 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Prepare Python venv (persistente entre corridas)
-        shell: python
+      - name: Locate Python
+        shell: cmd
+        env:
+          # Opcional: ruta completa a python.exe (Settings > Variables > Actions).
+          SELFHOSTED_PYTHON: ${{ vars.SELFHOSTED_PYTHON }}
         run: |
-          import os, subprocess, venv
-          from pathlib import Path
+          @echo off
+          echo Runner corriendo como: %USERDOMAIN%\%USERNAME%
+          set "FOUND="
 
-          base = Path(os.environ.get("RUNNER_TOOL_CACHE") or Path.home())
-          env_dir = base / "real-state-analyst-venv"
-          if not env_dir.exists():
-              venv.create(env_dir, with_pip=True)
-          py = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+          rem 1) Variable de repositorio SELFHOSTED_PYTHON
+          if defined SELFHOSTED_PYTHON if exist "%SELFHOSTED_PYTHON%" set "FOUND=%SELFHOSTED_PYTHON%"
 
-          def run(*args):
-              subprocess.run([str(py), *args], check=True)
+          rem 2) Python instalado "for all users" (accesible para cualquier cuenta)
+          if not defined FOUND for /d %%D in ("%ProgramFiles%\Python3*") do if exist "%%~D\python.exe" set "FOUND=%%~D\python.exe"
 
-          run("-m", "pip", "install", "--upgrade", "pip")
-          run("-m", "pip", "install", "-r", "requirements-scraper.txt")
-          run("-m", "playwright", "install", "chromium")
+          rem 3) PATH de la cuenta, ignorando el alias de la Microsoft Store
+          if not defined FOUND for /f "delims=" %%P in ('where python 2^>nul ^| find /v /i "WindowsApps"') do if not defined FOUND set "FOUND=%%P"
 
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"VENV_PY={py}\n")
+          if not defined FOUND goto notfound
+          echo Python elegido: %FOUND%
+          "%FOUND%" -c "import sys; print(sys.version); sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+          if errorlevel 1 goto badversion
+          echo PYTHON_EXE=%FOUND%>>"%GITHUB_ENV%"
+          exit /b 0
+
+          :notfound
+          echo ::error title=Python no encontrado::La cuenta %USERDOMAIN%\%USERNAME% no tiene un Python accesible. Instala Python 3.10+ marcando "Install for all users" (queda en C:\Program Files\Python3XX) o crea la variable de repositorio SELFHOSTED_PYTHON con la ruta completa a python.exe.
+          echo PATH visto por el runner: %PATH%
+          exit /b 1
+
+          :badversion
+          echo ::error title=Python demasiado antiguo::%FOUND% es menor que 3.10.
+          exit /b 1
+
+      - name: Prepare Python venv (persistente entre corridas)
+        shell: cmd
+        env:
+          PYTHONUTF8: "1"
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.tool_cache }}\ms-playwright
+        run: |
+          "%PYTHON_EXE%" scripts\ci_prepare_venv.py
+          exit /b %ERRORLEVEL%
 
       - name: "Run scraper: mercadolibre"
-        shell: python
+        shell: cmd
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -226,14 +252,16 @@ jobs:
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
           PAGES: ${{ github.event.inputs.pages || '200' }}
           CLEAR_CHECKPOINT: ${{ github.event.inputs.clear_checkpoints || 'false' }}
+          # Los logs llevan emojis/acentos: sin UTF-8, Windows usa cp1252 al
+          # escribir a la tubería del runner y print() lanza UnicodeEncodeError.
+          PYTHONUTF8: "1"
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.tool_cache }}\ms-playwright
         run: |
-          import os, subprocess, sys
-
-          args = [os.environ["VENV_PY"], "scripts/run_mercadolibre.py", "--pages", os.environ["PAGES"]]
-          if os.environ["CLEAR_CHECKPOINT"] == "true":
-              args.append("--clear-checkpoint")
-          # exit 2 = bloqueado (ver run_mercadolibre.py) -> job en rojo
-          sys.exit(subprocess.call(args))
+          set "EXTRA="
+          if /i "%CLEAR_CHECKPOINT%"=="true" set "EXTRA=--clear-checkpoint"
+          rem exit 2 = bloqueado, ver run_mercadolibre.py: el job queda en rojo
+          "%VENV_PY%" scripts\run_mercadolibre.py --pages %PAGES% %EXTRA%
+          exit /b %ERRORLEVEL%
 
   keepalive:
     # GitHub deshabilita los workflows con `schedule` tras 60 días sin commits

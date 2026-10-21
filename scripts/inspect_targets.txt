@@ -1,0 +1,13 @@
+# Páginas que inspecciona .github/workflows/inspect_portals.yml
+# Formato: URL ;; selectores extra (coma) ;; regex de enlaces a listar
+
+# --- Properati: 4 de 5 ciudades devuelven 0 resultados y ?page=N no avanza
+https://www.properati.com.co ;; ;; /s/
+https://www.properati.com.co/s/bogota/apartamento/venta ;; ;; page|pagina|/s/
+https://www.properati.com.co/s/bogota/apartamento/venta?page=2 ;; ;; page|pagina
+https://www.properati.com.co/s/bucaramanga/apartamento/venta ;; ;; page|pagina|/\d+$
+https://www.properati.com.co/s/bucaramanga/apartamento/venta?page=2 ;; ;; page|pagina
+
+# --- Secciones de proyectos nuevos / sobre planos
+https://www.fincaraiz.com.co ;; ;; proyecto|nuevo|planos|estrenar
+https://www.metrocuadrado.com ;; ;; proyecto|nuevo|planos|estrenar

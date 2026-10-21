@@ -12,12 +12,15 @@ from playwright.sync_api import Page
 from config.settings import PORTALS_CONFIG
 from src.scrapers.base_scraper import BaseScraper
 
-# Ciudades a raspar — agregar más según cobertura de Properati Colombia
+# Ciudades a raspar: slug de Properati tal como aparece en sus URLs
+# (/s/<slug>/apartamento/venta). Properati cambió a slugs con departamento;
+# los viejos ("bogota", "medellin"...) devuelven 404 y el scraper los tomaba
+# como "sin resultados". Agregar más según los enlaces de la home.
 TARGET_CITIES = [
-    "bogota",
-    "medellin",
-    "cali",
-    "barranquilla",
+    "bogota-d-c-colombia",
+    "medellin-antioquia",
+    "cali-valle-del-cauca",
+    "barranquilla-atlantico",
     "bucaramanga",
 ]
 
@@ -48,11 +51,11 @@ class ProperatiScraper(BaseScraper):
         while current_page <= max_pages:
             self.logger.info(f"Properati [{city}] — Página {current_page}/{max_pages}")
 
-            url = (
-                f"{self.base_url}/s/{city}/apartamento/venta"
-                if current_page == 1
-                else f"{self.base_url}/s/{city}/apartamento/venta?page={current_page}"
-            )
+            # La paginación es por ruta (/venta/2). Con ?page=2 Properati
+            # devuelve siempre la página 1.
+            url = f"{self.base_url}/s/{city}/apartamento/venta"
+            if current_page > 1:
+                url += f"/{current_page}"
 
             # Retry en goto — igual que ciencuadras
             loaded = False
@@ -67,6 +70,12 @@ class ProperatiScraper(BaseScraper):
 
             if not loaded:
                 self.logger.error(f"[{city}] No se pudo cargar p{current_page} tras 3 intentos.")
+                break
+
+            if "no encontrada" in page.title().lower():
+                self.logger.error(
+                    f"[{city}] 404 en {url}: el slug de ciudad ya no existe en Properati."
+                )
                 break
 
             self.human_delay(page, 2000, 4000)

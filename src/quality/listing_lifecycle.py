@@ -26,6 +26,17 @@ no deben marcarse como retirados: nadie ha ido a mirar. Lo que indica que un
 aviso desaparecio es que el portal SI se recorrio despues y el aviso no
 volvio a salir.
 
+"Visto por ultima vez" no es fecha_extraccion
+---------------------------------------------
+Los scrapers solo guardan un aviso cuando es nuevo o cambia de precio (indice
+de hashes SCD2). Un aviso que sigue publicado con el mismo precio se ve en
+cada crawl pero no genera fila, asi que su fecha_extraccion se queda en la
+primera vez que se vio y caia fuera de la ventana de vigencia: los proyectos
+nuevos, con precios estables y meses publicados, salian casi todos como no
+vigentes. Los scrapers registran ahora cada aviso visto en
+raw/_sightings/<portal>/ y Silver lo trae como `last_seen_at`; si existe, la
+vigencia usa la fecha mas reciente entre ambas.
+
 Tasa de avisos muertos medida por antiguedad (muestra de 50 por rango):
       0-7 dias   ->   4%
       8-30 dias  ->  18%
@@ -79,13 +90,20 @@ def classify_status(dias_sin_ver, url_status=None):
 # ══════════════════════════════════════════════════════════════════
 
 def add_lifecycle_columns(df, fecha_col="fecha_extraccion", portal_col="fuente",
-                          url_status_col=None):
-    """Agrega las columnas de ciclo de vida a un DataFrame de pandas."""
+                          url_status_col=None, seen_col="last_seen_at"):
+    """Agrega las columnas de ciclo de vida a un DataFrame de pandas.
+
+    Si existe `seen_col` (ultimo avistamiento del scraper), la fecha de
+    referencia es la mas reciente entre ella y `fecha_col`.
+    """
     import numpy as np
     import pandas as pd
 
     result = df.copy()
     seen_at = pd.to_datetime(result[fecha_col], errors="coerce")
+    if seen_col in result.columns:
+        sighting = pd.to_datetime(result[seen_col], errors="coerce")
+        seen_at = pd.concat([seen_at, sighting], axis=1).max(axis=1)
     result["last_seen_at"] = seen_at
 
     portal_last_crawl = seen_at.groupby(result[portal_col]).transform("max")
@@ -111,17 +129,29 @@ def add_lifecycle_columns(df, fecha_col="fecha_extraccion", portal_col="fuente",
 # ══════════════════════════════════════════════════════════════════
 
 def add_lifecycle_columns_spark(df, fecha_col="fecha_extraccion",
-                                portal_col="fuente", url_status_col=None):
-    """Version Spark, sin UDFs: todo se expresa como Window + when."""
+                                portal_col="fuente", url_status_col=None,
+                                seen_col="last_seen_at"):
+    """Version Spark, sin UDFs: todo se expresa como Window + when.
+
+    Si existe `seen_col` (ultimo avistamiento del scraper), la fecha de
+    referencia es la mas reciente entre ella y `fecha_col`.
+    """
     from pyspark.sql import Window
     from pyspark.sql import functions as F
 
     portal_window = Window.partitionBy(portal_col)
 
+    fecha = F.col(fecha_col).cast("timestamp")
+    if seen_col in df.columns:
+        # greatest ignora nulls: sin avistamiento se usa fecha_extraccion
+        seen_at = F.greatest(fecha, F.col(seen_col).cast("timestamp"))
+    else:
+        seen_at = fecha
+
     result = (
         df
-        .withColumn("last_seen_at", F.col(fecha_col).cast("timestamp"))
-        .withColumn("portal_last_crawl_at", F.max(F.col(fecha_col).cast("timestamp")).over(portal_window))
+        .withColumn("last_seen_at", seen_at)
+        .withColumn("portal_last_crawl_at", F.max(F.col("last_seen_at")).over(portal_window))
         .withColumn(
             "dias_sin_ver",
             F.datediff(F.col("portal_last_crawl_at"), F.col("last_seen_at")),

@@ -8,6 +8,7 @@ Híbrido Resiliente:
   - Guarda en CSV local (data/batches/) cada 10 páginas.
   - Sube batch Parquet final a S3 al terminar.
   - Sincroniza hashes SCD Type 2 con S3.
+  - Sube los IDs vistos en el run a raw/_sightings/<portal>/ (vigencia).
 """
 
 import csv
@@ -143,6 +144,12 @@ class BaseScraper(ABC):
         self.blocked = False
         self.block_reason = ""
         self.pages_scraped = 0
+
+        # Avistamientos: todo aviso visto en este run, incluidos los que el
+        # índice de hashes descarta por no tener cambios. Sin esto un aviso
+        # estable que sigue publicado nunca actualiza su fecha y el ETL lo
+        # marca como no vigente a los 30 días.
+        self.seen_ids: Set[str] = set()
 
     # ------------------------------------------------------------------
     # Ciclo de vida principal
@@ -296,7 +303,29 @@ class BaseScraper(ABC):
             else:
                 self.logger.error("Fallo al subir Parquet a S3.")
         
+        self._upload_sightings()
         self.logger.info(f"Ingesta finalizada para {self.portal_name}")
+
+    def _upload_sightings(self):
+        """Sube los IDs vistos en el run a raw/_sightings/<portal>/.
+
+        Va fuera de raw/<portal>/ a propósito: Bronze carga cada parquet de
+        esa carpeta como filas de avisos.
+        """
+        if not self.seen_ids:
+            return
+        seen_at = datetime.now().isoformat(timespec="seconds")
+        df = pd.DataFrame({
+            "id_inmueble": sorted(self.seen_ids),
+            "portal": self.portal_name,
+            "seen_at": seen_at,
+        })
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        key = f"{S3_BRONZE_PREFIX}/_sightings/{self.portal_name}/{self.portal_name}_{timestamp}.parquet"
+        if self.s3.upload_parquet(key, df):
+            self.logger.info(f"Avistamientos subidos: {len(df)} IDs vistos -> {key}")
+        else:
+            self.logger.error("Fallo al subir avistamientos a S3.")
 
     def _save_hashes_local(self):
         local_path = LOCAL_HASHES_DIR / f"{self.portal_name}_hash_index.txt"
@@ -346,6 +375,8 @@ class BaseScraper(ABC):
         unique_string = f"{property_id}_{precio}"
         price_hash = hashlib.md5(unique_string.encode("utf-8")).hexdigest()[:10]
         id_hash = f"{property_id}_{price_hash}"
+
+        self.seen_ids.add(str(property_data.get("id_inmueble") or property_id))
 
         if id_hash in self.historical_hashes:
             self.logger.debug(f"[SKIP] {property_id} — SCD Type 2 activo.")

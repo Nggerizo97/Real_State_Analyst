@@ -23,7 +23,6 @@ jobs:
     name: "Scrape ${{ matrix.scraper }}"
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-    if: always()
     strategy:
       fail-fast: false
       matrix:
@@ -133,7 +132,9 @@ jobs:
           echo "SCRAPER_EXIT=${PIPESTATUS[0]}" >> $GITHUB_ENV
 
       - name: Scraper summary
-        if: always()
+        # !cancelled() y no always(): GitHub no cancela pasos con always(),
+        # y el botón "Cancel workflow" se quedaba esperando a que terminaran.
+        if: ${{ !cancelled() }}
         run: |
           LOG="/tmp/scraper_${{ matrix.scraper }}.log"
           if [ -f "$LOG" ]; then
@@ -154,7 +155,7 @@ jobs:
           fi
 
       - name: Notify on failure or zero results
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           EXIT=${{ env.SCRAPER_EXIT || 0 }}
           NEW=${{ env.NEW_RECORDS || 0 }}

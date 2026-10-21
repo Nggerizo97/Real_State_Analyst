@@ -5,7 +5,7 @@ Spider para Properati Colombia — multi-ciudad.
 Fixes: retry en goto, detección de duplicados robusta, cobertura multi-ciudad.
 """
 
-import re
+import math
 from datetime import datetime
 from playwright.sync_api import Page
 
@@ -36,9 +36,13 @@ class ProperatiScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     def scrape_pages(self, page: Page, max_pages: int) -> None:
+        # max_pages es el presupuesto del run completo (como en los demás
+        # scrapers), no por ciudad: Bogotá sola tiene ~380 páginas y 5 ciudades
+        # x 200 páginas no caben en el timeout de 120 min del job.
+        pages_per_city = max(1, math.ceil(max_pages / len(TARGET_CITIES)))
         for city in TARGET_CITIES:
-            self.logger.info(f"Properati — iniciando ciudad: {city}")
-            self._scrape_city(page, city, max_pages)
+            self.logger.info(f"Properati — iniciando ciudad: {city} (hasta {pages_per_city} páginas)")
+            self._scrape_city(page, city, pages_per_city)
 
     # ------------------------------------------------------------------
     # Scraping por ciudad
@@ -117,8 +121,12 @@ class ProperatiScraper(BaseScraper):
             if not id_attr:
                 return False
 
-            link_el = element.query_selector("a[href*='/p/']")
-            href = link_el.get_attribute("href") if link_el else ""
+            # El enlace va en data-url (/detalle/... o /proyecto/...); el
+            # selector anterior a[href*='/p/'] ya no existe.
+            href = element.get_attribute("data-url") or ""
+            if not href:
+                link_el = element.query_selector("a.title[href]")
+                href = link_el.get_attribute("href") if link_el else ""
             full_url = f"{self.base_url}{href}" if href.startswith("/") else href
 
             title_el = element.query_selector(".title")
@@ -128,15 +136,9 @@ class ProperatiScraper(BaseScraper):
             price_raw = price_el.inner_text().strip() if price_el else "0"
             precio_num = self.parse_price(price_raw)
 
-            area = habitaciones = banos = ""
-            for spec in element.query_selector_all(".properties__item"):
-                text = spec.inner_text().lower()
-                if "m²" in text or "m2" in text:
-                    area = text
-                elif "hab" in text:
-                    habitaciones = text
-                elif "baño" in text:
-                    banos = text
+            habitaciones = self._text(element, ".properties__bedrooms")
+            banos = self._text(element, ".properties__bathrooms")
+            area = self._text(element, ".properties__area")
 
             prop_data = {
                 "id_inmueble": f"PR-{id_attr}",
@@ -149,6 +151,9 @@ class ProperatiScraper(BaseScraper):
                 "banos": banos,
                 "area": area,
                 "garajes": "",
+                # Properati mezcla proyectos (/proyecto/..., precio "Desde $")
+                # con avisos de reventa; el resto lo infiere Silver.
+                "estado_inmueble": "nuevo" if "/proyecto/" in full_url else "",
                 "url": full_url,
                 "portal": self.portal_name,
                 "fecha_extraccion": datetime.now().isoformat(timespec="seconds"),
@@ -159,3 +164,8 @@ class ProperatiScraper(BaseScraper):
         except Exception as e:
             self.logger.error(f"Error parseando item Properati: {e}")
             return False
+
+    @staticmethod
+    def _text(element, selector: str) -> str:
+        el = element.query_selector(selector)
+        return el.inner_text().strip() if el else ""

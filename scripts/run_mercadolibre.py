@@ -8,6 +8,7 @@ Uso:
     python scripts/run_mercadolibre.py --pages 20   # N páginas
     python scripts/run_mercadolibre.py --headed      # Abre navegador visible
     python scripts/run_mercadolibre.py --show        # Imprime registros en consola
+    python scripts/run_mercadolibre.py --clear-checkpoint  # Empieza desde la página 1
 """
 
 import argparse
@@ -36,9 +37,15 @@ def main() -> None:
         "--show", action="store_true",
         help="Imprime registros en consola al finalizar.",
     )
+    parser.add_argument(
+        "--clear-checkpoint", action="store_true",
+        help="Borra el checkpoint en S3 y empieza desde la página 1.",
+    )
     args = parser.parse_args()
 
     scraper = MercadoLibreScraper()
+    if args.clear_checkpoint:
+        scraper.checkpoint.clear()
     scraper.run(max_pages=args.pages, headless=not args.headed)
 
     if args.show and scraper.scraped_data:

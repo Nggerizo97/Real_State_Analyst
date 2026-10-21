@@ -8,9 +8,8 @@ Pagina por offset (_Desde_N) hasta agotar resultados o alcanzar el límite.
 
 MercadoLibre redirige a /gz/account-verification las IPs de datacenter
 (GitHub Actions, Cloudflare WARP). En ese caso el run se marca como
-bloqueado y el runner sale con código != 0. Para correrlo en CI hace falta
-una IP residencial: PROXY_URL apuntando a un proxy residencial o un
-self-hosted runner.
+bloqueado y el runner sale con código != 0. En CI corre en un self-hosted
+runner con IP residencial (job scrape-mercadolibre en scraper_cron.yml).
 """
 
 import re

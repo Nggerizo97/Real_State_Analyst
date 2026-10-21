@@ -32,8 +32,7 @@ jobs:
             pages: 200
           - scraper: fincaraiz
             pages: 200
-          - scraper: mercadolibre
-            pages: 200
+          # mercadolibre corre aparte en el self-hosted runner (job scrape-mercadolibre)
           - scraper: metrocuadrado
             pages: 200
           - scraper: ciencuadras_nuevo
@@ -125,10 +124,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
-          # MercadoLibre bloquea IPs de datacenter (incluida WARP). Si existe el
-          # secret MERCADOLIBRE_PROXY_URL (proxy residencial, admite
-          # http://user:pass@host:port) se usa ese; si no, WARP.
-          PROXY_URL: ${{ (matrix.scraper == 'mercadolibre' && secrets.MERCADOLIBRE_PROXY_URL) || 'socks5://127.0.0.1:40000' }}
+          PROXY_URL: "socks5://127.0.0.1:40000"
         run: |
           PAGES=${{ github.event.inputs.pages || matrix.pages }}
           echo "Starting ${{ matrix.scraper }} (max_pages=$PAGES)..."
@@ -173,6 +169,67 @@ jobs:
             echo "::error title=Scraper ${{ matrix.scraper }} falló::exit=$EXIT — revisa el log del paso 'Run scraper'"
             exit 1
           fi
+
+  scrape-mercadolibre:
+    # MercadoLibre redirige las IPs de datacenter (runners de GitHub y WARP) a
+    # /gz/account-verification. Este job corre en un self-hosted runner con IP
+    # residencial, registrado con la etiqueta `mercadolibre`.
+    #
+    # Los pasos usan `shell: python` para funcionar igual en Windows, macOS y
+    # Linux. Requisito en la máquina: Python >= 3.10 en el PATH del runner.
+    #
+    # Si la máquina está apagada, el job queda en cola (hasta 24 h). No bloquea
+    # el ETL: trigger-etl solo espera a los scrapers en la nube y los datos de
+    # ML que queden en raw/ los recoge la siguiente corrida.
+    name: Scrape mercadolibre (self-hosted)
+    runs-on: [self-hosted, mercadolibre]
+    timeout-minutes: 120
+    concurrency:
+      group: scrape-mercadolibre
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Prepare Python venv (persistente entre corridas)
+        shell: python
+        run: |
+          import os, subprocess, venv
+          from pathlib import Path
+
+          base = Path(os.environ.get("RUNNER_TOOL_CACHE") or Path.home())
+          env_dir = base / "real-state-analyst-venv"
+          if not env_dir.exists():
+              venv.create(env_dir, with_pip=True)
+          py = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+          def run(*args):
+              subprocess.run([str(py), *args], check=True)
+
+          run("-m", "pip", "install", "--upgrade", "pip")
+          run("-m", "pip", "install", "-r", "requirements-scraper.txt")
+          run("-m", "playwright", "install", "chromium")
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"VENV_PY={py}\n")
+
+      - name: "Run scraper: mercadolibre"
+        shell: python
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          PAGES: ${{ github.event.inputs.pages || '200' }}
+          CLEAR_CHECKPOINT: ${{ github.event.inputs.clear_checkpoints || 'false' }}
+        run: |
+          import os, subprocess, sys
+
+          args = [os.environ["VENV_PY"], "scripts/run_mercadolibre.py", "--pages", os.environ["PAGES"]]
+          if os.environ["CLEAR_CHECKPOINT"] == "true":
+              args.append("--clear-checkpoint")
+          # exit 2 = bloqueado (ver run_mercadolibre.py) -> job en rojo
+          sys.exit(subprocess.call(args))
 
   keepalive:
     # GitHub deshabilita los workflows con `schedule` tras 60 días sin commits

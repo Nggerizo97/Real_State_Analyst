@@ -186,7 +186,7 @@ def search_metadata():
         )["market_token"].tolist()
 
         tipos = ["apartamento", "casa", "lote", "local_comercial", "oficina"]
-        fuentes = ["bancolombia_tu360", "ciencuadras", "ciencuadras_nuevo", "ciencuadras_usado", "facebook", "fincaraiz", "mercadolibre", "metrocuadrado", "properati"]
+        fuentes = ["bancolombia_tu360", "ciencuadras", "ciencuadras_nuevo", "ciencuadras_usado", "facebook", "fincaraiz", "fincaraiz_proyectos", "mercadolibre", "metrocuadrado", "metrocuadrado_proyectos", "properati"]
 
         # Geografía oficial DIVIPOLA, si el ETL ya escribió esas columnas.
         # Permite selectores en cascada departamento -> municipio en vez de la

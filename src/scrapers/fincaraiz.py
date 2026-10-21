@@ -97,10 +97,12 @@ class FincaRaizScraper(BaseScraper):
             for card in cards:
                 self._extract_property(card)
 
-            # Verificar si hay página siguiente
+            # Verificar si hay página siguiente: enlace a .../pagina{N+1}. El
+            # botón de flecha no siempre trae texto '>' (en /proyectos-vivienda
+            # solo hay números), y sin esto el recorrido se cortaba en la p1.
             next_link = page.query_selector(
-                "a[href*=pagina]:has-text('>')"
-            )
+                f"a[href$='pagina{current_page + 1}']"
+            ) or page.query_selector("a[href*=pagina]:has-text('>')")
             if not next_link:
                 self.logger.info(
                     "No hay botón 'Siguiente'. Fin de la paginación."

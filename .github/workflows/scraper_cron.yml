@@ -34,6 +34,10 @@ jobs:
           # mercadolibre corre aparte en el self-hosted runner (job scrape-mercadolibre)
           - scraper: metrocuadrado
             pages: 200
+          - scraper: fincaraiz_proyectos
+            pages: 200
+          - scraper: metrocuadrado_proyectos
+            pages: 200
           - scraper: ciencuadras_nuevo
             pages: 200
           - scraper: ciencuadras_usado

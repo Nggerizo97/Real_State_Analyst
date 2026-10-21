@@ -36,6 +36,16 @@ PORTALS_CONFIG = {
         "base_url": "https://www.metrocuadrado.com",
         "enabled": True
     },
+    # Secciones de proyectos nuevos / sobre planos: fuente propia en S3 y
+    # estado_inmueble="nuevo". Reutilizan la extracción del portal padre.
+    "fincaraiz_proyectos": {
+        "base_url": "https://www.fincaraiz.com.co",
+        "enabled": True
+    },
+    "metrocuadrado_proyectos": {
+        "base_url": "https://www.metrocuadrado.com",
+        "enabled": True
+    },
     "ciencuadras_nuevo": {
         "base_url": "https://www.ciencuadras.com",
         "enabled": True

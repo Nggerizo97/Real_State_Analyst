@@ -109,6 +109,15 @@ class BaseScraper(ABC):
     Maneja: Persistencia Híbrida (CSV Local Buffer -> S3 Parquet).
     """
 
+    # Ajustes anti-bot que cada portal puede activar (MercadoLibre los usa):
+    # - MATCH_REAL_UA: User-Agent y Sec-Ch-Ua con la versión real del Chromium.
+    #   Forzar "Chrome/122" sobre un Chromium más nuevo deja el UA en
+    #   desacuerdo con navigator.userAgentData, una señal clásica de bot.
+    # - PROFILE_DIR_ENV: variable de entorno con un directorio de perfil
+    #   persistente (cookies, storage) para volver como visitante recurrente.
+    MATCH_REAL_UA = False
+    PROFILE_DIR_ENV: Optional[str] = None
+
     def __init__(self, portal_name: str):
         self.portal_name = portal_name
         self.s3 = S3Connector()
@@ -176,11 +185,45 @@ class BaseScraper(ABC):
         self.logger.info(f"Local Buffer: {self._csv_path}")
 
         # 3. Lanzar browser
-        ua = random.choice(_USER_AGENTS)
+        major = self._real_chromium_major() if self.MATCH_REAL_UA else None
+        if major:
+            ua = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+            )
+        else:
+            ua = random.choice(_USER_AGENTS)
+            major = re.search(r"Chrome/(\d+)", ua).group(1)
         width = random.choice([1280, 1366, 1440, 1920])
         height = random.choice([768, 800, 900, 1080])
 
         proxy_config = self._proxy_config(os.getenv("PROXY_URL"))
+        profile_dir = os.getenv(self.PROFILE_DIR_ENV) if self.PROFILE_DIR_ENV else None
+
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-infobars",
+            f"--window-size={width},{height}",
+        ]
+        headers = {"Accept-Language": "es-CO,es;q=0.9,en-US;q=0.8"}
+        if not self.MATCH_REAL_UA:
+            # Con UA real se dejan los client hints nativos del navegador: los
+            # forzados ("Google Chrome", "Not(A:Brand";v="24") no coinciden con
+            # navigator.userAgentData de Chromium.
+            headers.update({
+                "Sec-Ch-Ua": f'"Chromium";v="{major}", "Not(A:Brand";v="24", "Google Chrome";v="{major}"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+            })
+        context_options = dict(
+            viewport={"width": width, "height": height},
+            user_agent=ua,
+            locale="es-CO",
+            timezone_id="America/Bogota",
+            extra_http_headers=headers,
+        )
 
         stealth = Stealth(
             navigator_languages_override=("es-CO", "es", "en-US", "en"),
@@ -188,30 +231,19 @@ class BaseScraper(ABC):
             navigator_user_agent_override=ua,
         )
         with stealth.use_sync(sync_playwright()) as p:
-            browser = p.chromium.launch(
-                headless=headless,
-                proxy=proxy_config,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-infobars",
-                    f"--window-size={width},{height}",
-                ],
-            )
-            context = browser.new_context(
-                viewport={"width": width, "height": height},
-                user_agent=ua,
-                locale="es-CO",
-                timezone_id="America/Bogota",
-                extra_http_headers={
-                    "Accept-Language": "es-CO,es;q=0.9,en-US;q=0.8",
-                    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-                    "Sec-Ch-Ua-Mobile": "?0",
-                    "Sec-Ch-Ua-Platform": '"Windows"',
-                },
-            )
-            
+            if profile_dir:
+                # Perfil persistente: el contexto ES el navegador
+                Path(profile_dir).mkdir(parents=True, exist_ok=True)
+                browser = None
+                context = p.chromium.launch_persistent_context(
+                    profile_dir, headless=headless, proxy=proxy_config,
+                    args=launch_args, **context_options,
+                )
+                self.logger.info(f"Perfil persistente: {profile_dir}")
+            else:
+                browser = p.chromium.launch(headless=headless, proxy=proxy_config, args=launch_args)
+                context = browser.new_context(**context_options)
+
             page = context.new_page()
             page.add_init_script(_STEALTH_SCRIPT)
 
@@ -223,10 +255,23 @@ class BaseScraper(ABC):
                 self.logger.error(f"Error crítico en {self.portal_name}: {e}")
             finally:
                 context.close()
-                browser.close()
+                if browser:
+                    browser.close()
 
         # 4. Finalizar persistencia
         self._finalize_run()
+
+    @staticmethod
+    def _real_chromium_major() -> Optional[str]:
+        """Versión mayor del Chromium que usa Playwright (p. ej. '141')."""
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                version = browser.version
+                browser.close()
+            return version.split(".")[0]
+        except Exception:
+            return None
 
     @staticmethod
     def _proxy_config(proxy_url: Optional[str]) -> Optional[Dict[str, str]]:

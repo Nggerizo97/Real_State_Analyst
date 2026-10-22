@@ -254,8 +254,12 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
-          PAGES: ${{ github.event.inputs.pages || '200' }}
+          # Pocas páginas por run: ML bloqueó la IP tras 16 páginas rápidas.
+          # Con dos runs al día el checkpoint recorre el listado en ~1 día.
+          PAGES: ${{ github.event.inputs.pages || '25' }}
           CLEAR_CHECKPOINT: ${{ github.event.inputs.clear_checkpoints || 'false' }}
+          # Perfil de navegador persistente (cookies) entre corridas.
+          ML_PROFILE_DIR: ${{ runner.tool_cache }}\ml-browser-profile
           # Los logs llevan emojis/acentos: sin UTF-8, Windows usa cp1252 al
           # escribir a la tubería del runner y print() lanza UnicodeEncodeError.
           PYTHONUTF8: "1"

@@ -24,6 +24,13 @@ _BLOCK_URL_MARKERS = ("account-verification", "loginType=", "/login")
 
 
 class MercadoLibreScraper(BaseScraper):
+    # El 2026-10-21 trajo 658 avisos en 16 páginas en ~4 min desde una IP
+    # residencial y desde esa tarde la misma IP cae en account-verification:
+    # navegador con UA real y perfil persistente, y mucho más despacio.
+    MATCH_REAL_UA = True
+    PROFILE_DIR_ENV = "ML_PROFILE_DIR"
+    PAGE_PAUSE_MS = (8_000, 18_000)
+
     def __init__(self):
         super().__init__("mercadolibre")
         self.base_url = PORTALS_CONFIG[self.portal_name]["base_url"]
@@ -110,7 +117,7 @@ class MercadoLibreScraper(BaseScraper):
             # Flush local cada 10 páginas + checkpoint en S3 para retomar
             self.on_page_done(current_page)
 
-            self.human_delay(page, 1500, 3000)
+            self.human_delay(page, *self.PAGE_PAUSE_MS)
 
     # ------------------------------------------------------------------
     # Warm-up navigation

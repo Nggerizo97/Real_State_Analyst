@@ -1,12 +1,13 @@
-name: Daily Real Estate Scraper
+name: Real Estate Scraper
 
 on:
   schedule:
-    # Dos runs por día — cada uno raspa 200 páginas y continúa desde checkpoint
-    # Run 1: 01:00 UTC (raspa páginas 1-200 o continúa desde checkpoint)
-    # Run 2: 07:00 UTC (continúa desde donde quedó el Run 1)
-    - cron: '0 1 * * *'
-    - cron: '0 7 * * *'
+    # Un run cada 3 días a las 01:00 UTC (8:00 p.m. hora Colombia; el job de
+    # MercadoLibre necesita el PC del self-hosted runner encendido a esa hora).
+    # Cada scraper continúa desde su checkpoint. */3 cuenta días del mes: corre
+    # los días 1, 4, 7 … 28, 31, así que a fin de mes el intervalo puede ser
+    # de 1 o 2 días.
+    - cron: '0 1 */3 * *'
   workflow_dispatch:
     inputs:
       pages:
@@ -255,7 +256,7 @@ jobs:
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
           # Pocas páginas por run: ML bloqueó la IP tras 16 páginas rápidas.
-          # Con dos runs al día el checkpoint recorre el listado en ~1 día.
+          # El checkpoint retoma el resto en el siguiente run.
           PAGES: ${{ github.event.inputs.pages || '25' }}
           CLEAR_CHECKPOINT: ${{ github.event.inputs.clear_checkpoints || 'false' }}
           # Perfil de navegador persistente (cookies) entre corridas.

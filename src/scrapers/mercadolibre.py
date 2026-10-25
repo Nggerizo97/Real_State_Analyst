@@ -8,8 +8,9 @@ Pagina por offset (_Desde_N) hasta agotar resultados o alcanzar el límite.
 
 MercadoLibre redirige a /gz/account-verification las IPs de datacenter
 (GitHub Actions, Cloudflare WARP). En ese caso el run se marca como
-bloqueado y el runner sale con código != 0. En CI corre en un self-hosted
-runner con IP residencial (job scrape-mercadolibre en scraper_cron.yml).
+bloqueado y el runner sale con código != 0. También bloqueó la IP
+residencial de un self-hosted runner (2026-10-25), así que tras un bloqueo
+entra en cool-down (COOLDOWN_DAYS) para no reintentar en cada run.
 """
 
 import re
@@ -29,7 +30,10 @@ class MercadoLibreScraper(BaseScraper):
     # navegador con UA real y perfil persistente, y mucho más despacio.
     MATCH_REAL_UA = True
     PROFILE_DIR_ENV = "ML_PROFILE_DIR"
-    PAGE_PAUSE_MS = (8_000, 18_000)
+    PAGE_PAUSE_MS = (15_000, 40_000)
+    # 2026-10-25: verificación de nuevo en la página 2 pese a lo anterior.
+    # Tras un bloqueo no se reintenta en una semana.
+    COOLDOWN_DAYS = 7
 
     def __init__(self):
         super().__init__("mercadolibre")

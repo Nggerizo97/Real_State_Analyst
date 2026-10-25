@@ -29,7 +29,10 @@ class MercadoLibreScraper(BaseScraper):
     # navegador con UA real y perfil persistente, y mucho más despacio.
     MATCH_REAL_UA = True
     PROFILE_DIR_ENV = "ML_PROFILE_DIR"
-    PAGE_PAUSE_MS = (8_000, 18_000)
+    PAGE_PAUSE_MS = (15_000, 40_000)
+    # 2026-10-25: verificación de nuevo en la página 2 pese a lo anterior.
+    # Tras un bloqueo no se reintenta en una semana.
+    COOLDOWN_DAYS = 7
 
     def __init__(self):
         super().__init__("mercadolibre")

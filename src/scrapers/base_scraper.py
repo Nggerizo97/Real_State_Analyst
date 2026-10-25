@@ -13,12 +13,13 @@ Híbrido Resiliente:
 
 import csv
 import hashlib
+import json
 import os
 import random
 import re
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import unquote, urlparse
@@ -117,6 +118,9 @@ class BaseScraper(ABC):
     #   persistente (cookies, storage) para volver como visitante recurrente.
     MATCH_REAL_UA = False
     PROFILE_DIR_ENV: Optional[str] = None
+    # Días sin volver a intentar tras un bloqueo (0 = desactivado). Reintentar
+    # contra un portal que ya bloqueó solo alarga la penalización a la IP.
+    COOLDOWN_DAYS = 0
 
     def __init__(self, portal_name: str):
         self.portal_name = portal_name
@@ -168,6 +172,15 @@ class BaseScraper(ABC):
         self.logger.info(f"{'=' * 60}")
         self.logger.info(f"  Iniciando scraper: {self.portal_name}")
         self.logger.info(f"{'=' * 60}")
+
+        # 0. Cool-down tras un bloqueo reciente: no se toca el portal
+        cooldown_until = self._cooldown_until()
+        if cooldown_until:
+            self.logger.warning(
+                f"[COOLDOWN] {self.portal_name} bloqueó el acceso; no se reintenta "
+                f"hasta {cooldown_until.isoformat(timespec='minutes')}."
+            )
+            return
 
         # 1. Cargar hashes y checkpoint
         self._load_hashes()
@@ -260,6 +273,8 @@ class BaseScraper(ABC):
 
         # 4. Finalizar persistencia
         self._finalize_run()
+        if self.blocked and self.COOLDOWN_DAYS:
+            self._start_cooldown()
 
     @staticmethod
     def _real_chromium_major() -> Optional[str]:
@@ -293,6 +308,40 @@ class BaseScraper(ABC):
             "username": unquote(parsed.username),
             "password": unquote(parsed.password or ""),
         }
+
+    @property
+    def _cooldown_key(self) -> str:
+        # Dentro de raw/<portal>/state/: Bronze solo carga .parquet y el lector
+        # de checkpoints ignora este nombre de archivo.
+        return f"{self.prefix}/state/cooldown.json"
+
+    def _cooldown_until(self) -> Optional[datetime]:
+        """Fin del cool-down vigente, o None si se puede raspar."""
+        if not self.COOLDOWN_DAYS:
+            return None
+        try:
+            resp = self.s3.s3_client.get_object(Bucket=self.s3.bucket, Key=self._cooldown_key)
+            until = datetime.fromisoformat(json.loads(resp["Body"].read())["until"])
+        except Exception:
+            return None  # sin marca (o ilegible): no hay cool-down
+        return until if until > datetime.now() else None
+
+    def _start_cooldown(self) -> None:
+        until = datetime.now() + timedelta(days=self.COOLDOWN_DAYS)
+        body = {
+            "portal": self.portal_name,
+            "blocked_at": datetime.now().isoformat(timespec="seconds"),
+            "until": until.isoformat(timespec="seconds"),
+            "reason": self.block_reason,
+        }
+        try:
+            self.s3.s3_client.put_object(
+                Bucket=self.s3.bucket, Key=self._cooldown_key,
+                Body=json.dumps(body, indent=2).encode(), ContentType="application/json",
+            )
+            self.logger.warning(f"[COOLDOWN] Sin reintentos hasta {body['until']} ({self._cooldown_key}).")
+        except Exception as e:
+            self.logger.error(f"No se pudo guardar el cool-down: {e}")
 
     def mark_blocked(self, reason: str) -> None:
         """Registra que el portal bloqueó la sesión (login wall, CAPTCHA...)."""

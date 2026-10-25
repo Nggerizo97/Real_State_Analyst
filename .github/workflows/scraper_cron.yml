@@ -195,6 +195,11 @@ jobs:
     # el ETL: trigger-etl solo espera a los scrapers en la nube y los datos de
     # ML que queden en raw/ los recoge la siguiente corrida.
     name: Scrape mercadolibre (self-hosted)
+    # Pausado: MercadoLibre bloquea el acceso automatizado también desde la IP
+    # residencial (2026-10-25: verificación en la página 2). Para reactivarlo,
+    # crear la variable de repositorio ENABLE_MERCADOLIBRE=true
+    # (Settings > Secrets and variables > Actions > Variables).
+    if: ${{ vars.ENABLE_MERCADOLIBRE == 'true' }}
     runs-on: [self-hosted, mercadolibre]
     timeout-minutes: 120
     concurrency:

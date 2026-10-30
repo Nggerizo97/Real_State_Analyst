@@ -19,29 +19,13 @@ presenta como si el modelo hubiera aprendido el barrio.
 import pandas as pd
 import streamlit as st
 
-# Debajo de este numero de comparables la mediana del barrio es ruido.
-MIN_COMPARABLES = 8
+# barrio_column y el umbral viven en comparables.py, que no importa streamlit.
+from src.utils.comparables import MIN_COMPARABLES, barrio_column  # noqa: F401
 
 # Topes de seguridad para el factor de ajuste. Un barrio no puede valer 4x su
 # ciudad; si el dato dice eso, casi siempre es una muestra sucia.
 FACTOR_MIN = 0.55
 FACTOR_MAX = 1.85
-
-_BLANKS = {"", "nan", "none", "null", "<na>"}
-
-
-def _clean(series: pd.Series) -> pd.Series:
-    text = series.astype(str).str.strip()
-    return text.mask(text.str.lower().isin(_BLANKS), "")
-
-
-def barrio_column(df: pd.DataFrame) -> pd.Series:
-    """Nombre de barrio a usar: el oficial DIVIPOLA, si no el texto depurado."""
-    if "barrio_display" in df.columns:
-        return _clean(df["barrio_display"])
-    oficial = _clean(df["barrio"]) if "barrio" in df.columns else pd.Series("", index=df.index)
-    texto = _clean(df["barrio_texto"]) if "barrio_texto" in df.columns else pd.Series("", index=df.index)
-    return oficial.where(oficial.ne(""), texto)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)

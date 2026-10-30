@@ -135,8 +135,14 @@ def _render_result_card(result: dict):
     )
 
 
-def _render_barrio_block(result, stats_barrio, barrio, municipio, area, modelo_conoce_barrio):
+def _render_barrio_block(result, stats_barrio, comparables, barrio, municipio, area,
+                         modelo_conoce_barrio):
     """Comparables del barrio y, si hace falta, la valoración ajustada.
+
+    `comparables` sale de src.utils.comparables.buscar_comparables(): el grupo
+    más parecido al inmueble (mismo tipo y área) que tenga datos suficientes,
+    con el nivel usado dicho en pantalla. `stats_barrio` es todo el barrio y
+    solo da el factor frente al municipio.
 
     Se distinguen tres situaciones y se dicen en voz alta, porque cambian el
     significado del número:
@@ -170,15 +176,16 @@ def _render_barrio_block(result, stats_barrio, barrio, municipio, area, modelo_c
             f"al entrenar), así que la valoración usa el promedio de {municipio}."
         )
 
-    if stats_barrio is None:
+    if stats_barrio is None or comparables is None:
         st.caption(f"Sin comparables suficientes en {barrio}.")
         return
 
-    n = int(stats_barrio["n"])
-    pm2_barrio = float(stats_barrio["precio_m2_mediano"])
-    p25 = float(stats_barrio["precio_m2_p25"])
-    p75 = float(stats_barrio["precio_m2_p75"])
+    n = int(comparables["n"])
+    pm2_barrio = comparables["precio_m2_mediano"]
+    p25 = comparables["precio_m2_p25"]
+    p75 = comparables["precio_m2_p75"]
     factor = float(stats_barrio["factor"])
+    n_barrio = int(stats_barrio["n"])
 
     st.markdown("<div style='height:.8rem'></div>", unsafe_allow_html=True)
     st.markdown(
@@ -187,34 +194,39 @@ def _render_barrio_block(result, stats_barrio, barrio, municipio, area, modelo_c
     )
 
     cells = st.columns(3)
-    cells[0].metric("Inmuebles comparables", f"{n:,}")
-    cells[1].metric("Precio/m² mediano del barrio", f"${pm2_barrio:,.0f}")
+    cells[0].metric("Inmuebles comparables", f"{n:,}", help=comparables["descripcion"].capitalize())
+    cells[1].metric("Precio/m² mediano", f"${pm2_barrio:,.0f}", help=comparables["descripcion"].capitalize())
     cells[2].metric(
         "Frente al municipio",
         f"{(factor - 1) * 100:+.0f}%",
-        help=f"Mediana del barrio contra la mediana de {municipio}.",
+        help=f"Mediana de todo {barrio} ({n_barrio:,} avisos, todos los tipos) contra la de {municipio}.",
     )
 
     # El simbolo $ se escapa: Streamlit interpreta $...$ como LaTeX y se comia
     # los signos de peso, dejando "6,569,145 — 10,179,398 por m2" sin moneda.
     st.caption(
-        f"Rango intercuartil del barrio: \\${p25:,.0f} — \\${p75:,.0f} por m². "
+        f"Comparables: {comparables['descripcion']}. "
+        f"Rango intercuartil: \\${p25:,.0f} — \\${p75:,.0f} por m². "
         f"Para {area:,.0f} m² eso equivale a \\${p25 * area:,.0f} — \\${p75 * area:,.0f}."
     )
+    if comparables["nota"]:
+        st.caption(comparables["nota"])
 
     # Aviso cuando el modelo se sale del rango real del barrio. Es la senal de
-    # que la valoracion no es fiable ahi.
+    # que la valoracion no es fiable ahi. No se da cuando el rango mezcla tipos
+    # (barrio_todos): una casa fuera del rango de los apartamentos no dice nada.
     pm2_modelo = result.get("precio_m2_pred", 0)
-    if pm2_modelo and (pm2_modelo < p25 * 0.75 or pm2_modelo > p75 * 1.25):
+    if (comparables["nivel"] != "barrio_todos" and pm2_modelo
+            and (pm2_modelo < p25 * 0.75 or pm2_modelo > p75 * 1.25)):
         direccion = "por debajo" if pm2_modelo < p25 else "por encima"
         motivo = (
-            "el inmueble se aleja de los comparables del barrio."
+            "el inmueble se aleja de sus comparables en el barrio."
             if barrio_en_modelo
             else f"el modelo no está usando el barrio dentro de {municipio}."
         )
         st.warning(
             f"El modelo estima \\${pm2_modelo:,.0f}/m², muy {direccion} del rango "
-            f"observado en {barrio} (\\${p25:,.0f} — \\${p75:,.0f}/m²). "
+            f"de {comparables['descripcion']} (\\${p25:,.0f} — \\${p75:,.0f}/m²). "
             f"Toma la valoración con reserva: {motivo}"
         )
 
@@ -241,7 +253,7 @@ def _render_barrio_block(result, stats_barrio, barrio, municipio, area, modelo_c
         f'${valor_ajustado:,.0f} <span style="font-size:.65rem;color:rgba(255,255,255,.4)">COP</span></div>'
         f'<p style="font-size:.72rem;color:var(--muted);line-height:1.5;margin:.5rem 0 0">'
         f'{motivo_ajuste} Esta cifra aplica sobre su resultado el factor {factor:.2f} observado en '
-        f'{barrio} ({n:,} comparables). No es una salida del modelo, es un ajuste con datos del '
+        f'{barrio} ({n_barrio:,} avisos). No es una salida del modelo, es un ajuste con datos del '
         f'catálogo.'
         f'</p></div>',
         unsafe_allow_html=True,
@@ -397,6 +409,8 @@ def render_tab_val_teaser(df_master):
                 }
 
                 stats_barrio = lookup(barrio_stats, t_municipio, t_barrio) if t_barrio else None
+                from src.utils.comparables import buscar_comparables
+                comparables = buscar_comparables(df_master, t_municipio, t_barrio, t_tipo, float(t_area))
 
                 # Ejecutar predicción
                 from src.utils.scorer import bundle_conoce_barrio, score_single
@@ -404,7 +418,7 @@ def render_tab_val_teaser(df_master):
 
                 modelo_conoce_barrio = bundle_conoce_barrio(bundle)
                 _render_result_card(result)
-                _render_barrio_block(result, stats_barrio, t_barrio, t_municipio,
+                _render_barrio_block(result, stats_barrio, comparables, t_barrio, t_municipio,
                                      t_area, modelo_conoce_barrio)
         else:
             st.markdown(

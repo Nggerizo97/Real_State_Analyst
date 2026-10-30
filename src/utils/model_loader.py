@@ -215,7 +215,7 @@ class ModelLoader:
         # Convertir list-of-dicts a DataFrames para stats
         import pandas as pd
         for stats_key in ["city_stats", "comuna_stats", "segment_stats",
-                          "micro_stats", "sector_stats", "hab_stats",
+                          "micro_stats", "sector_stats", "hab_stats", "barrio_stats",
                           "fuente_ratio_stats", "fuente_segmento_ratio_stats"]:
             val = bundle.get(stats_key)
             if isinstance(val, list) and val:

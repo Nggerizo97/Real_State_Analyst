@@ -1,0 +1,31 @@
+# .github/workflows/tests.yml
+#
+# Pruebas del scorer de valoración. No necesitan AWS: entrenan un modelo
+# pequeño con datos sintéticos y verifican que el barrio mueva la predicción.
+
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Mismas versiones que requirements.txt para lo que toca el scorer.
+      - name: Instalar dependencias
+        run: pip install "pandas==2.2.2" "numpy==1.26.4" "scikit-learn==1.5.1" xgboost pytest
+
+      - name: Pytest
+        run: python -m pytest tests -q

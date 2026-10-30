@@ -81,3 +81,33 @@ def contains_phrase(haystack_norm: str, needle_norm: str) -> bool:
     if not haystack_norm or not needle_norm:
         return False
     return f" {needle_norm} " in f" {haystack_norm} "
+
+
+# Marcadores de "sin dato" que llegan como texto y no como null: Gold
+# escribe el barrio ausente como "None" y el Gold puntuado como "".
+BLANK_MARKERS = frozenset({"", "nan", "none", "null", "<na>", "nat"})
+
+# Categoria de las filas sin barrio o con un barrio sin masa suficiente.
+BARRIO_OTRO = "barrio_otro"
+
+
+def barrio_key(city_token, barrio) -> str:
+    """Llave de barrio que ven el modelo y sus estadisticas.
+
+    Es la UNICA definicion de la llave: el entrenamiento (04), la inferencia
+    batch (05) y la app de Streamlit la importan de aqui. Antes cada capa
+    armaba su propio f"{ciudad} | {barrio}" con el texto tal cual, y la app
+    ademas capitalizaba los barrios de texto libre ("fonqueta" -> "Fonqueta").
+    Una llave que no coincide con la del entrenamiento no da error: el
+    OneHotEncoder(handle_unknown="ignore") la convierte en ceros en silencio.
+
+    Ciudad y barrio se normalizan igual que `key_barrio` de dim_barrio:
+    ('Medellín', 'La Candelaria (Centro)') -> 'medellin | la candelaria centro'.
+    """
+    if barrio is None or str(barrio).strip().lower() in BLANK_MARKERS:
+        return BARRIO_OTRO
+    barrio_norm = normalize_text(barrio)
+    city_norm = normalize_text(city_token)
+    if not barrio_norm or not city_norm or city_norm in BLANK_MARKERS:
+        return BARRIO_OTRO
+    return f"{city_norm} | {barrio_norm}"

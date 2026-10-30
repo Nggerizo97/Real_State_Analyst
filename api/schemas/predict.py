@@ -23,6 +23,10 @@ class PredictRequest(BaseModel):
     comuna_mercado: str = Field("comuna_otra", max_length=64)
     sector_mercado: str = Field("sector_otra", max_length=64)
     fuente: str = Field("manual_input", max_length=64)
+    barrio: Optional[str] = Field(
+        None, max_length=120,
+        description="Barrio (nombre DIVIPOLA o texto libre). Sin barrio se usa el promedio del municipio.",
+    )
 
     model_config = {"json_schema_extra": {
         "example": {
@@ -48,3 +52,6 @@ class PredictResponse(BaseModel):
     mape_pct: float
     estado: Optional[str] = None
     model_key: Optional[str] = None
+    # False si el barrio enviado no está entre los del modelo y se valoró con
+    # el promedio del municipio.
+    barrio_en_modelo: Optional[bool] = None

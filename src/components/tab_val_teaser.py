@@ -138,14 +138,21 @@ def _render_result_card(result: dict):
 def _render_barrio_block(result, stats_barrio, barrio, municipio, area, modelo_conoce_barrio):
     """Comparables del barrio y, si hace falta, la valoración ajustada.
 
-    Se distinguen dos situaciones y se dicen en voz alta, porque cambian el
+    Se distinguen tres situaciones y se dicen en voz alta, porque cambian el
     significado del número:
 
-    * El modelo ya incluye `barrio_key` como feature -> el valor de arriba ya
+    * El modelo se entrenó con barrios y conoce este -> el valor de arriba ya
       tiene el barrio dentro y aquí solo se muestran los comparables.
-    * El modelo todavía solo ve la ciudad -> se muestra además una estimación
+    * El modelo se entrenó con barrios pero no conoce este -> el valor de
+      arriba es el del municipio; se avisa y se muestra el ajuste.
+    * El modelo solo ve la ciudad -> se muestra además una estimación
       ajustada por el factor del barrio, etiquetada como cálculo aparte y no
       como salida del modelo.
+
+    `modelo_conoce_barrio` sale de bundle_conoce_barrio(), no de mirar si
+    barrio_key aparece en feature_cols: el bundle v8 la listaba aunque se
+    entrenó con barrio_key constante, y aquí se afirmaba que la valoración
+    "ya tenía en cuenta" un barrio cuyo efecto era cero.
     """
     if "error" in result:
         return
@@ -155,6 +162,13 @@ def _render_barrio_block(result, stats_barrio, barrio, municipio, area, modelo_c
             "Sin barrio seleccionado: la tasación corresponde al promedio del municipio."
         )
         return
+
+    barrio_en_modelo = bool(modelo_conoce_barrio and result.get("barrio_en_modelo"))
+    if modelo_conoce_barrio and not barrio_en_modelo:
+        st.warning(
+            f"{barrio} no está entre los barrios del modelo (tuvo muy pocos avisos "
+            f"al entrenar), así que la valoración usa el promedio de {municipio}."
+        )
 
     if stats_barrio is None:
         st.caption(f"Sin comparables suficientes en {barrio}.")
@@ -189,19 +203,22 @@ def _render_barrio_block(result, stats_barrio, barrio, municipio, area, modelo_c
     )
 
     # Aviso cuando el modelo se sale del rango real del barrio. Es la senal de
-    # que la valoracion no es fiable ahi: el modelo solo conoce el municipio y
-    # en barrios muy por encima o por debajo de su ciudad se queda corto.
+    # que la valoracion no es fiable ahi.
     pm2_modelo = result.get("precio_m2_pred", 0)
     if pm2_modelo and (pm2_modelo < p25 * 0.75 or pm2_modelo > p75 * 1.25):
         direccion = "por debajo" if pm2_modelo < p25 else "por encima"
+        motivo = (
+            "el inmueble se aleja de los comparables del barrio."
+            if barrio_en_modelo
+            else f"el modelo no está usando el barrio dentro de {municipio}."
+        )
         st.warning(
             f"El modelo estima \\${pm2_modelo:,.0f}/m², muy {direccion} del rango "
             f"observado en {barrio} (\\${p25:,.0f} — \\${p75:,.0f}/m²). "
-            f"Toma la valoración con reserva: el modelo activo no distingue "
-            f"barrios dentro de {municipio}."
+            f"Toma la valoración con reserva: {motivo}"
         )
 
-    if modelo_conoce_barrio:
+    if barrio_en_modelo:
         st.caption(
             "El modelo activo incluye el barrio entre sus variables, así que la "
             "valoración de arriba ya lo tiene en cuenta."
@@ -209,6 +226,12 @@ def _render_barrio_block(result, stats_barrio, barrio, municipio, area, modelo_c
         return
 
     valor_ajustado = result["valor_predicho"] * factor
+    motivo_ajuste = (
+        "El modelo activo no conoce este barrio y lo valoró con el promedio del municipio."
+        if modelo_conoce_barrio
+        else "El modelo activo <strong>no</strong> usa el barrio como variable: solo llega al "
+             "nivel de municipio."
+    )
     st.markdown(
         f'<div style="background:var(--surface2);border:1px solid var(--border);'
         f'border-left:4px solid #0891b2;padding:1rem 1.2rem;border-radius:4px;margin-top:.6rem">'
@@ -217,10 +240,9 @@ def _render_barrio_block(result, stats_barrio, barrio, municipio, area, modelo_c
         f'<div style="font-size:1.5rem;font-weight:900;color:white;font-family:DM Mono,monospace">'
         f'${valor_ajustado:,.0f} <span style="font-size:.65rem;color:rgba(255,255,255,.4)">COP</span></div>'
         f'<p style="font-size:.72rem;color:var(--muted);line-height:1.5;margin:.5rem 0 0">'
-        f'El modelo activo <strong>no</strong> usa el barrio como variable: solo llega al nivel de '
-        f'municipio. Esta cifra aplica sobre su resultado el factor {factor:.2f} observado en '
+        f'{motivo_ajuste} Esta cifra aplica sobre su resultado el factor {factor:.2f} observado en '
         f'{barrio} ({n:,} comparables). No es una salida del modelo, es un ajuste con datos del '
-        f'catálogo. Al reentrenar con la variable de barrio, ambas cifras convergen.'
+        f'catálogo.'
         f'</p></div>',
         unsafe_allow_html=True,
     )
@@ -362,25 +384,25 @@ def render_tab_val_teaser(df_master):
                     "data_completeness": 0.8,
                     "comuna_mercado": "comuna_otra",
                     "sector_mercado": "sector_otra",
-                    # barrio_key es la feature que usa el modelo reentrenado.
-                    # Si el bundle activo aún no la incluye, el scorer la
-                    # ignora y el ajuste empírico de abajo cubre el hueco.
-                    "barrio_key": f"{t_ciudad} | {t_barrio}" if t_barrio else "barrio_otro",
+                    # El scorer arma barrio_key con src.geo.normalize.barrio_key
+                    # y toma las medianas de barrio del bundle, igual que el
+                    # entrenamiento. Antes se armaba aquí a mano y con medianas
+                    # propias del catálogo, y la llave no coincidía con la del
+                    # modelo.
                     "barrio": t_barrio,
                     "municipio": t_municipio,
+                    # Mismo formato que gold/app_inmuebles: el texto del aviso
+                    # también entra al modelo (TF-IDF de texto_completo).
+                    "zona_mercado": f"{t_municipio} | {t_barrio or 'Sin barrio'}",
                 }
 
                 stats_barrio = lookup(barrio_stats, t_municipio, t_barrio) if t_barrio else None
-                if stats_barrio is not None:
-                    row["precio_m2_mediano_barrio"] = float(stats_barrio["precio_m2_mediano"])
-                    row["precio_estimado_barrio_area"] = float(t_area) * float(stats_barrio["precio_m2_mediano"])
-                    row["barrio_vs_ciudad_ratio"] = float(stats_barrio["factor"])
 
                 # Ejecutar predicción
-                from src.utils.scorer import score_single
+                from src.utils.scorer import bundle_conoce_barrio, score_single
                 result = score_single(row, bundle)
 
-                modelo_conoce_barrio = "barrio_key" in (bundle.get("feature_cols") or [])
+                modelo_conoce_barrio = bundle_conoce_barrio(bundle)
                 _render_result_card(result)
                 _render_barrio_block(result, stats_barrio, t_barrio, t_municipio,
                                      t_area, modelo_conoce_barrio)

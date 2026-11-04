@@ -70,7 +70,8 @@ WANTED_COLUMNS = [
     "dispersion_pct_grupo", "data_completeness", "first_seen_date",
     # Columnas nuevas del ETL; pueden no existir aun en la primera corrida.
     "cod_dpto", "departamento", "cod_mpio", "municipio", "cod_barrio", "barrio",
-    "barrio_texto", "latitud", "longitud", "geo_match_level", "geo_confidence",
+    "barrio_texto", "barrio_zona", "codigo_postal", "latitud", "longitud",
+    "geo_match_level", "geo_confidence",
     "listing_status", "is_active", "dias_sin_ver",
     # Último avistamiento del scraper: si Gold no trae is_active, la vigencia
     # se recalcula con él y no solo con fecha_extraccion.

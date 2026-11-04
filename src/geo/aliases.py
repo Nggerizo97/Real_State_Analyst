@@ -289,6 +289,33 @@ DEPARTAMENTO_REGION = {
 }
 
 # ══════════════════════════════════════════════════════════════════
+# 4b. DIVISIONES ADMINISTRATIVAS DENTRO DEL MUNICIPIO
+#    Localidades de Bogota y comunas/corregimientos de Medellin, en
+#    texto normalizado. Los portales escriben "Ciudad, Comuna, Barrio"
+#    ("Medellin, El Poblado, Provenza"); el resolver usa esta lista para
+#    preferir el barrio y dejar la comuna como barrio_zona. Sin ella
+#    ganaba la frase mas larga y casi todo Bogota y Medellin quedaba a
+#    nivel de localidad o comuna.
+# ══════════════════════════════════════════════════════════════════
+
+ZONAS_ADMINISTRATIVAS = {
+    "11001": {
+        "usaquen", "chapinero", "santa fe", "san cristobal", "usme", "tunjuelito", "bosa",
+        "kennedy", "fontibon", "engativa", "suba", "barrios unidos", "teusaquillo",
+        "los martires", "martires", "antonio narino", "puente aranda", "la candelaria",
+        "candelaria", "rafael uribe uribe", "rafael uribe", "ciudad bolivar", "sumapaz",
+    },
+    "05001": {
+        "popular", "santa cruz", "manrique", "aranjuez", "castilla", "doce de octubre",
+        "robledo", "villa hermosa", "villahermosa", "buenos aires", "la candelaria",
+        "la candelaria centro", "laureles", "laureles estadio", "estadio", "la america",
+        "san javier", "el poblado", "poblado", "guayabal", "belen",
+        "san sebastian de palmitas", "palmitas", "san cristobal", "altavista",
+        "san antonio de prado", "santa elena",
+    },
+}
+
+# ══════════════════════════════════════════════════════════════════
 # 5. STOPWORDS PARA NOMBRES DE BARRIO
 #    Esta lista es la correccion directa del bug que producia
 #    sector_mercado = 'en' (10.972 filas), 'd c en' (3.899), 'en en',

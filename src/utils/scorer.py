@@ -7,9 +7,13 @@ import traceback
 import xgboost as xgb
 
 try:
-    from src.geo.normalize import BARRIO_OTRO, BLANK_MARKERS, barrio_key
+    from src.geo.normalize import (
+        BARRIO_OTRO, BLANK_MARKERS, ZONA_POSTAL_OTRA, barrio_key, zona_postal_key,
+    )
 except ImportError:  # la API agrega src/ al path, no la raiz del repo
-    from geo.normalize import BARRIO_OTRO, BLANK_MARKERS, barrio_key
+    from geo.normalize import (
+        BARRIO_OTRO, BLANK_MARKERS, ZONA_POSTAL_OTRA, barrio_key, zona_postal_key,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +22,7 @@ TEXT_COLS = ["ubicacion_norm", "zona_mercado", "ubicacion_raw", "titulo"]
 
 BARRIO_NUM_FEATURES = [
     "precio_m2_mediano_barrio", "precio_estimado_barrio_area", "barrio_vs_ciudad_ratio",
+    "precio_m2_mediano_zona_postal",
 ]
 
 
@@ -64,28 +69,46 @@ def add_barrio_features(frame: pd.DataFrame, bundle: dict) -> pd.DataFrame:
     y traia sus propias medianas del catalogo: la llave no coincidia con la
     del modelo y el OneHotEncoder(handle_unknown="ignore") la volvia ceros sin
     avisar. Un barrio que el modelo no conoce pasa a barrio_otro y toma la
-    mediana de su ciudad, igual que en el entrenamiento; `barrio_en_modelo`
-    lo deja dicho. Requiere precio_m2_mediano_ciudad ya calculado.
+    mediana de su zona postal (columna codigo_postal, tabla
+    bundle["zona_postal_stats"]) y, si no, la de su ciudad, igual que en el
+    entrenamiento; `barrio_en_modelo` lo deja dicho. Requiere precio_m2_mediano_ciudad ya calculado.
     """
     stats = _to_df(bundle.get("barrio_stats"))
     if stats is not None and not stats.empty and "barrio_key" in stats.columns:
         medianas = stats.drop_duplicates("barrio_key").set_index("barrio_key")["precio_m2_mediano_barrio"]
     else:
         medianas = pd.Series(dtype=float)
+    zonas = bundle.get("zona_postal_stats")
+    if isinstance(zonas, list):
+        zonas = pd.DataFrame(zonas)
+    if zonas is not None and not zonas.empty and "zona_postal_key" in zonas.columns:
+        medianas_zona = (zonas.drop_duplicates("zona_postal_key")
+                         .set_index("zona_postal_key")["precio_m2_mediano_zona_postal"])
+    else:
+        medianas_zona = pd.Series(dtype=float)
 
     nombres = _barrio_nombre(frame)
     keys = pd.Series(
         [barrio_key(ciudad, barrio) for ciudad, barrio in zip(frame["city_token"], nombres)],
         index=frame.index,
     )
-    frame = frame.drop(columns=[c for c in ["barrio_key", "barrio_en_modelo", *BARRIO_NUM_FEATURES]
+    zkeys = (frame["codigo_postal"].map(zona_postal_key) if "codigo_postal" in frame.columns
+             else pd.Series(ZONA_POSTAL_OTRA, index=frame.index))
+    frame = frame.drop(columns=[c for c in ["barrio_key", "barrio_en_modelo", "zona_postal_key",
+                                            "zona_postal_en_modelo", *BARRIO_NUM_FEATURES]
                                 if c in frame.columns])
 
     conocido = keys.isin(medianas.index)
     frame["barrio_en_modelo"] = conocido & keys.ne(BARRIO_OTRO)
     frame["barrio_key"] = keys.where(conocido, BARRIO_OTRO)
+    # Respaldo en cadena, como en 04: barrio -> zona postal -> ciudad.
+    frame["zona_postal_key"] = zkeys.where(zkeys.isin(medianas_zona.index), ZONA_POSTAL_OTRA)
+    frame["zona_postal_en_modelo"] = frame["zona_postal_key"].ne(ZONA_POSTAL_OTRA)
+    frame["precio_m2_mediano_zona_postal"] = (
+        frame["zona_postal_key"].map(medianas_zona).fillna(frame["precio_m2_mediano_ciudad"])
+    )
     frame["precio_m2_mediano_barrio"] = (
-        frame["barrio_key"].map(medianas).fillna(frame["precio_m2_mediano_ciudad"])
+        frame["barrio_key"].map(medianas).fillna(frame["precio_m2_mediano_zona_postal"])
     )
     frame["precio_estimado_barrio_area"] = frame["area_m2"] * frame["precio_m2_mediano_barrio"]
     frame["barrio_vs_ciudad_ratio"] = (
@@ -303,6 +326,7 @@ def score_dataframe(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
         df["precio_predicho"] = precio_pred.astype("float32")
         df["barrio_en_modelo"] = r["barrio_en_modelo"].to_numpy()
         df["barrio_key"] = r["barrio_key"].to_numpy()
+        df["zona_postal_en_modelo"] = r["zona_postal_en_modelo"].to_numpy()
         df["rentabilidad_potencial"] = (
             ((df["precio_predicho"] - df["precio_num"]) / df["precio_num"].replace(0, np.nan) * 100)
             .replace([np.inf, -np.inf], 0).fillna(0).round(1).astype("float32")
@@ -352,4 +376,5 @@ def score_single(row: dict, bundle: dict) -> dict:
         "estado": r["estado_inversion"],
         "barrio_en_modelo": bool(r["barrio_en_modelo"]),
         "barrio_key": str(r["barrio_key"]),
+        "zona_postal_en_modelo": bool(r["zona_postal_en_modelo"]),
     }

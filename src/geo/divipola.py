@@ -9,8 +9,10 @@ la app de Streamlit.
     dim_departamento   33 filas    codigo, nombre oficial, region, lat/lon
     dim_municipio    1.122 filas   codigo DANE, nombre oficial, lat/lon,
                                    mercado comercial, prioridad de desempate
-    dim_barrio       8.612 filas   cabeceras, centros poblados y barrios
-                                   urbanos con lat/lon y precision declarada
+    dim_barrio     ~38.000 filas   cabeceras y centros poblados (DIVIPOLA),
+                                   barrios y veredas oficiales de 4-72 con
+                                   codigo postal, y la semilla manual de
+                                   barrios; lat/lon y precision declarada
 
     dim_municipio_alias            todas las grafias -> cod_mpio (indice de
                                    busqueda que usa el resolver)
@@ -31,6 +33,7 @@ from .aliases import (
     MARKET_MEMBER_PRIORITY,
     MUNICIPIO_ALIASES,
     MUNICIPIO_PRIORITY,
+    ZONAS_ADMINISTRATIVAS,
 )
 from .normalize import normalize_text
 
@@ -38,6 +41,13 @@ DEFAULT_SOURCE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "reference",
     "mapeo_geografico_colombia.xlsx",
+)
+
+# Barrios y veredas oficiales de 4-72 (tools/build_barrios_postales.py).
+CATALOGO_BARRIOS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "reference",
+    "barrios_postales_4_72.csv",
 )
 
 # Prefijos honorificos que DIVIPOLA incluye y los portales omiten.
@@ -180,12 +190,101 @@ def build_dim_municipio_alias(dim_municipio: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
-def build_dim_barrio(sheets: dict, dim_municipio: pd.DataFrame) -> pd.DataFrame:
+def _nivel_mapeo(record) -> str:
+    if record.tipo == "Centro poblado":
+        return "centro_poblado"
+    if record.tipo == "Cabecera municipal":
+        return "cabecera"
+    if record.key_barrio in ZONAS_ADMINISTRATIVAS.get(record.cod_mpio, ()):
+        return "comuna"
+    return "barrio"
+
+
+def _filas_catalogo(catalogo: pd.DataFrame) -> pd.DataFrame:
+    """Catalogo 4-72 (tools/build_barrios_postales.py) con el esquema de dim_barrio.
+
+    barrio_zona queda en la localidad (Bogota) o en la zona postal: 4-72 no
+    publica nombres de comuna y el codigo postal agrupa barrios vecinos en
+    todo el pais.
+    """
+    df = catalogo.copy()
+    df["cod_mpio"] = df["cod_mpio"].astype(str).str.zfill(5)
+    df["cod_dpto"] = df["cod_mpio"].str[:2]
+    zona_postal = "Zona postal " + df["codigo_postal"].fillna("")
+    df["zona"] = df["localidad"].where(df["localidad"].notna(), zona_postal.where(df["codigo_postal"].notna()))
+    df["barrio"] = df["nombre"].astype(str).str.strip()
+    df["cod_barrio"] = None  # cod_barrio es solo para codigos DANE
+    df["tipo"] = df["nivel"].map({"barrio": "Barrio urbano", "vereda": "Vereda"})
+    df["precision"] = df["lat"].notna().map({True: "oficial_4_72", False: "lista_4_72"})
+    df = df.rename(columns={"lat": "latitud", "lon": "longitud"})
+    return df[["cod_dpto", "cod_mpio", "barrio", "latitud", "longitud", "zona", "cod_barrio",
+               "tipo", "precision", "nivel", "codigo_postal"]]
+
+
+# Cuando un nombre aparece en varias fuentes del mismo municipio se conserva
+# una sola fila, en este orden: barrio oficial 4-72 (poligono y codigo postal),
+# barrio de la semilla manual (nombres comerciales como Provenza), centro
+# poblado o cabecera DIVIPOLA (codigo DANE), vereda 4-72, comuna de la semilla.
+_PRIORIDAD_FUENTE = {
+    ("barrio", "4-72"): 0, ("barrio", "semilla"): 1, ("centro_poblado", "divipola"): 2,
+    ("cabecera", "divipola"): 2, ("vereda", "4-72"): 3, ("comuna", "semilla"): 4,
+}
+
+
+# Distancia maxima para heredar el codigo postal del barrio oficial vecino.
+MAX_KM_CODIGO_POSTAL = 1.5
+
+
+def _completar_codigo_postal(df: pd.DataFrame, max_km: float = MAX_KM_CODIGO_POSTAL) -> pd.DataFrame:
+    """Codigo postal para los barrios de la semilla manual (Provenza, Rosales...).
+
+    4-72 no los publica porque son nombres comerciales o subsectores. Se toma
+    el del barrio oficial 4-72 mas cercano del mismo municipio, si esta a
+    menos de max_km; las coordenadas de la semilla son aproximadas, asi que
+    mas lejos no se asigna. Las comunas no reciben codigo: abarcan varios.
+    """
+    import numpy as np
+
+    df = df.copy()
+    lat = pd.to_numeric(df["latitud"], errors="coerce")
+    lon = pd.to_numeric(df["longitud"], errors="coerce")
+    referencia = (df["origen"] == "4-72") & (df["nivel"] == "barrio") & df["codigo_postal"].notna() & lat.notna()
+    faltan = (df["origen"] == "semilla") & (df["nivel"] == "barrio") & df["codigo_postal"].isna() & lat.notna()
+    for cod_mpio in df.loc[faltan, "cod_mpio"].unique():
+        ref = referencia & (df["cod_mpio"] == cod_mpio)
+        if not ref.any():
+            continue
+        objetivo = faltan & (df["cod_mpio"] == cod_mpio)
+        coseno = np.cos(np.radians(lat[objetivo].to_numpy()))[:, None]
+        dx = (lon[objetivo].to_numpy()[:, None] - lon[ref].to_numpy()[None, :]) * 111.32 * coseno
+        dy = (lat[objetivo].to_numpy()[:, None] - lat[ref].to_numpy()[None, :]) * 110.57
+        distancia = np.hypot(dx, dy)
+        cercano = distancia.argmin(axis=1)
+        codigos = df.loc[ref, "codigo_postal"].to_numpy()[cercano]
+        df.loc[objetivo, "codigo_postal"] = np.where(distancia.min(axis=1) <= max_km, codigos, None)
+    return df
+
+
+def build_dim_barrio(sheets: dict, dim_municipio: pd.DataFrame, catalogo: pd.DataFrame = None) -> pd.DataFrame:
     df = sheets["mapeo"].copy()
     df["cod_dpto"] = df["cod_dpto"].astype(str).str.zfill(2)
     df["cod_mpio"] = df["cod_mpio"].astype(str).str.zfill(5)
     df["barrio"] = df["barrio"].astype(str).str.strip()
     df["key_barrio"] = df["barrio"].map(normalize_text)
+    df["nivel"] = [_nivel_mapeo(r) for r in df.itertuples()]
+    df["origen"] = df["tipo"].map({"Barrio urbano": "semilla"}).fillna("divipola")
+    df["codigo_postal"] = None
+
+    if catalogo is not None and not catalogo.empty:
+        extra = _filas_catalogo(catalogo)
+        extra["key_barrio"] = extra["barrio"].map(normalize_text)
+        extra["origen"] = "4-72"
+        df = pd.concat([df, extra], ignore_index=True)
+        df["_prioridad"] = [_PRIORIDAD_FUENTE.get((n, o), 5) for n, o in zip(df["nivel"], df["origen"])]
+        df = (df.sort_values(["cod_mpio", "key_barrio", "_prioridad"])
+                .drop_duplicates(["cod_mpio", "key_barrio"]).drop(columns="_prioridad"))
+        df = _completar_codigo_postal(df)
+
     df["barrio_tokens"] = df["key_barrio"].str.split().str.len().fillna(0).astype(int)
     df = df.rename(columns={"latitud": "barrio_lat", "longitud": "barrio_lon"})
 
@@ -201,7 +300,7 @@ def build_dim_barrio(sheets: dict, dim_municipio: pd.DataFrame) -> pd.DataFrame:
         [
             "cod_dpto", "departamento", "cod_mpio", "municipio", "market_token", "region",
             "cod_barrio", "barrio", "key_barrio", "barrio_tokens", "zona", "tipo",
-            "precision", "barrio_lat", "barrio_lon",
+            "precision", "barrio_lat", "barrio_lon", "nivel", "codigo_postal",
         ]
     ].sort_values(["cod_mpio", "barrio"]).reset_index(drop=True)
 
@@ -209,8 +308,15 @@ def build_dim_barrio(sheets: dict, dim_municipio: pd.DataFrame) -> pd.DataFrame:
 DIM_NAMES = ("dim_departamento", "dim_municipio", "dim_municipio_alias", "dim_barrio")
 
 
+def load_catalogo_barrios(path: str = CATALOGO_BARRIOS):
+    """Catalogo 4-72 versionado en el repo, o None si no esta."""
+    if not os.path.isfile(path):
+        return None
+    return pd.read_csv(path, dtype={"cod_mpio": str, "codigo_postal": str, "localidad": str})
+
+
 def build_all(path: str = None) -> dict:
-    """Construye la dimension desde el libro DIVIPOLA."""
+    """Construye la dimension desde el libro DIVIPOLA y el catalogo 4-72."""
     sheets = load_source(path)
     dim_departamento = build_dim_departamento(sheets)
     dim_municipio = build_dim_municipio(sheets)
@@ -218,7 +324,7 @@ def build_all(path: str = None) -> dict:
         "dim_departamento": dim_departamento,
         "dim_municipio": dim_municipio,
         "dim_municipio_alias": build_dim_municipio_alias(dim_municipio),
-        "dim_barrio": build_dim_barrio(sheets, dim_municipio),
+        "dim_barrio": build_dim_barrio(sheets, dim_municipio, load_catalogo_barrios()),
     }
 
 

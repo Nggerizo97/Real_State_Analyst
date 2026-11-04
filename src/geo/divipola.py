@@ -231,6 +231,40 @@ _PRIORIDAD_FUENTE = {
 }
 
 
+# Distancia maxima para heredar el codigo postal del barrio oficial vecino.
+MAX_KM_CODIGO_POSTAL = 1.5
+
+
+def _completar_codigo_postal(df: pd.DataFrame, max_km: float = MAX_KM_CODIGO_POSTAL) -> pd.DataFrame:
+    """Codigo postal para los barrios de la semilla manual (Provenza, Rosales...).
+
+    4-72 no los publica porque son nombres comerciales o subsectores. Se toma
+    el del barrio oficial 4-72 mas cercano del mismo municipio, si esta a
+    menos de max_km; las coordenadas de la semilla son aproximadas, asi que
+    mas lejos no se asigna. Las comunas no reciben codigo: abarcan varios.
+    """
+    import numpy as np
+
+    df = df.copy()
+    lat = pd.to_numeric(df["latitud"], errors="coerce")
+    lon = pd.to_numeric(df["longitud"], errors="coerce")
+    referencia = (df["origen"] == "4-72") & (df["nivel"] == "barrio") & df["codigo_postal"].notna() & lat.notna()
+    faltan = (df["origen"] == "semilla") & (df["nivel"] == "barrio") & df["codigo_postal"].isna() & lat.notna()
+    for cod_mpio in df.loc[faltan, "cod_mpio"].unique():
+        ref = referencia & (df["cod_mpio"] == cod_mpio)
+        if not ref.any():
+            continue
+        objetivo = faltan & (df["cod_mpio"] == cod_mpio)
+        coseno = np.cos(np.radians(lat[objetivo].to_numpy()))[:, None]
+        dx = (lon[objetivo].to_numpy()[:, None] - lon[ref].to_numpy()[None, :]) * 111.32 * coseno
+        dy = (lat[objetivo].to_numpy()[:, None] - lat[ref].to_numpy()[None, :]) * 110.57
+        distancia = np.hypot(dx, dy)
+        cercano = distancia.argmin(axis=1)
+        codigos = df.loc[ref, "codigo_postal"].to_numpy()[cercano]
+        df.loc[objetivo, "codigo_postal"] = np.where(distancia.min(axis=1) <= max_km, codigos, None)
+    return df
+
+
 def build_dim_barrio(sheets: dict, dim_municipio: pd.DataFrame, catalogo: pd.DataFrame = None) -> pd.DataFrame:
     df = sheets["mapeo"].copy()
     df["cod_dpto"] = df["cod_dpto"].astype(str).str.zfill(2)
@@ -249,6 +283,7 @@ def build_dim_barrio(sheets: dict, dim_municipio: pd.DataFrame, catalogo: pd.Dat
         df["_prioridad"] = [_PRIORIDAD_FUENTE.get((n, o), 5) for n, o in zip(df["nivel"], df["origen"])]
         df = (df.sort_values(["cod_mpio", "key_barrio", "_prioridad"])
                 .drop_duplicates(["cod_mpio", "key_barrio"]).drop(columns="_prioridad"))
+        df = _completar_codigo_postal(df)
 
     df["barrio_tokens"] = df["key_barrio"].str.split().str.len().fillna(0).astype(int)
     df = df.rename(columns={"latitud": "barrio_lat", "longitud": "barrio_lon"})

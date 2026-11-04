@@ -50,6 +50,29 @@ def _get_model_bundle():
     return _load_bundle_for(_champion_key())
 
 
+@st.cache_resource(show_spinner=False)
+def _resolver():
+    from src.geo.geo_resolver import get_resolver
+    return get_resolver()
+
+
+def _codigo_postal(df_master, municipio, barrio):
+    """Codigo postal 4-72 del barrio: el de sus avisos o, si no hay, el del resolver.
+
+    El modelo lo usa como respaldo cuando el barrio tiene pocos avisos.
+    """
+    from src.utils.comparables import codigo_postal_del_barrio
+
+    codigo = codigo_postal_del_barrio(df_master, municipio, barrio)
+    if codigo or not barrio:
+        return codigo
+    try:
+        resuelto = _resolver().resolve(f"{barrio}, {municipio}")
+    except Exception:
+        return None
+    return resuelto["codigo_postal"] if resuelto.get("municipio") == municipio else None
+
+
 def _render_model_badge(manifest: dict):
     """Renderiza un mini-badge con info del modelo cargado."""
     from src.utils.model_loader import ModelLoader
@@ -171,9 +194,13 @@ def _render_barrio_block(result, stats_barrio, comparables, barrio, municipio, a
 
     barrio_en_modelo = bool(modelo_conoce_barrio and result.get("barrio_en_modelo"))
     if modelo_conoce_barrio and not barrio_en_modelo:
+        respaldo = (
+            "el promedio de su zona postal" if result.get("zona_postal_en_modelo")
+            else f"el promedio de {municipio}"
+        )
         st.warning(
             f"{barrio} no está entre los barrios del modelo (tuvo muy pocos avisos "
-            f"al entrenar), así que la valoración usa el promedio de {municipio}."
+            f"al entrenar), así que la valoración usa {respaldo}."
         )
 
     if stats_barrio is None or comparables is None:
@@ -234,6 +261,15 @@ def _render_barrio_block(result, stats_barrio, comparables, barrio, municipio, a
         st.caption(
             "El modelo activo incluye el barrio entre sus variables, así que la "
             "valoración de arriba ya lo tiene en cuenta."
+        )
+        return
+
+    if result.get("zona_postal_en_modelo"):
+        # El factor del barrio es frente al municipio; aplicarlo sobre una
+        # valoracion que ya usa la zona postal ajustaria dos veces.
+        st.caption(
+            "La valoración de arriba ya usa el precio de la zona postal del barrio; "
+            "compárala con el rango de comparables."
         )
         return
 
@@ -406,6 +442,8 @@ def render_tab_val_teaser(df_master):
                     # Mismo formato que gold/app_inmuebles: el texto del aviso
                     # también entra al modelo (TF-IDF de texto_completo).
                     "zona_mercado": f"{t_municipio} | {t_barrio or 'Sin barrio'}",
+                    # Respaldo del barrio en el modelo: zona postal 4-72.
+                    "codigo_postal": _codigo_postal(df_master, t_municipio, t_barrio),
                 }
 
                 stats_barrio = lookup(barrio_stats, t_municipio, t_barrio) if t_barrio else None

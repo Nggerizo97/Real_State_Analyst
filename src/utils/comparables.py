@@ -126,3 +126,21 @@ def buscar_comparables(df: pd.DataFrame, municipio: str, barrio: str, tipo: str,
             f"y sirve solo como referencia."
         ),
     )
+
+
+def codigo_postal_del_barrio(df: pd.DataFrame, municipio: str, barrio: str):
+    """Codigo postal mas frecuente entre los avisos del barrio, o None.
+
+    Silver guarda el codigo postal 4-72 del barrio o vereda resuelto; el
+    modelo lo usa como respaldo cuando el barrio tiene pocos avisos.
+    """
+    if not barrio or "codigo_postal" not in df.columns:
+        return None
+    base = pd.DataFrame({
+        "municipio": _columna(df, "municipio").astype(str),
+        "barrio": barrio_column(df),
+        "codigo_postal": _clean(df["codigo_postal"]),
+    })
+    codigos = base.loc[base["municipio"].eq(municipio) & base["barrio"].eq(barrio)
+                       & base["codigo_postal"].ne(""), "codigo_postal"]
+    return None if codigos.empty else str(codigos.mode().iloc[0])

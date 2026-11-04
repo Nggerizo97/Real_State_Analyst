@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
 
-from src.utils.comparables import buscar_comparables  # noqa: E402
+from src.utils.comparables import buscar_comparables, codigo_postal_del_barrio  # noqa: E402
 
 
 def _avisos(municipio, barrio, tipo, n, precio_m2, area=100.0):
@@ -83,3 +83,14 @@ def test_el_mismo_barrio_en_otra_ciudad_no_cuenta():
     c = buscar_comparables(df, "Medellín", "Laureles", "casa", 221)
     assert c["nivel"] == "barrio_ajustado"
     assert c["n"] == 10
+
+
+def test_codigo_postal_mas_frecuente_del_barrio():
+    df = pd.DataFrame({
+        "municipio": ["Medellín"] * 4 + ["Envigado"],
+        "barrio_display": ["Provenza", "Provenza", "Provenza", "Laureles", "Provenza"],
+        "codigo_postal": ["050022", "050022", "050021", "050031", "055422"],
+    })
+    assert codigo_postal_del_barrio(df, "Medellín", "Provenza") == "050022"
+    assert codigo_postal_del_barrio(df, "Medellín", "Robledo") is None
+    assert codigo_postal_del_barrio(df.drop(columns="codigo_postal"), "Medellín", "Provenza") is None

@@ -45,6 +45,7 @@ FEATURE_COLS = [
     "fuente", "city_token", "texto_completo",
     "barrio_key", "precio_m2_mediano_barrio", "precio_estimado_barrio_area",
     "barrio_vs_ciudad_ratio",
+    "precio_m2_mediano_zona_postal",
 ]
 CATEGORICAS = ["tipo_inmueble", "estado_inmueble", "fuente", "city_token", "barrio_key"]
 
@@ -53,6 +54,14 @@ PM2_BARRIO = {
     "Santa Mónica": 5.0e6,
     "La Candelaria (Centro)": 3.5e6,
     "El Poblado": 11.0e6,
+}
+
+# Zona postal 4-72 de cada barrio sintetico (La America y Santa Monica comparten).
+CP_BARRIO = {
+    "La América": "050032",
+    "Santa Mónica": "050032",
+    "La Candelaria (Centro)": "050012",
+    "El Poblado": "050021",
 }
 
 CASA = dict(area_m2=230.0, habitaciones=6.0, banos=2.0, garajes=1.0,
@@ -75,6 +84,7 @@ def _avisos(n=1500, seed=3):
             "estado_inmueble": "usado", "fuente": "fincaraiz", "city_token": "Medellín",
             # Gold escribe el barrio ausente como la cadena "None".
             "barrio": barrio if rng.random() < 0.8 else "None",
+            "codigo_postal": CP_BARRIO[barrio],
             "titulo": "inmueble en venta",
             "precio_num": area * PM2_BARRIO[barrio] * rng.lognormal(0, 0.05),
         })
@@ -107,11 +117,18 @@ def _entrenar(con_barrio: bool) -> dict:
             "precio_m2_mediano_barrio": [avisos["precio_m2"].median()],
         })
 
+    zona_postal_stats = (
+        avisos.groupby("codigo_postal")["precio_m2"]
+        .agg(precio_m2_mediano_zona_postal="median", n_zona_postal="count")
+        .reset_index().rename(columns={"codigo_postal": "zona_postal_key"})
+    )
+
     bundle = {
         "strategy": "absolute",
         "feature_cols": FEATURE_COLS,
         "city_stats": city_stats,
         "barrio_stats": barrio_stats,
+        "zona_postal_stats": zona_postal_stats,
         "market_meta": {
             "global_price_median": float(avisos["precio_num"].median()),
             "global_pm2_median": float(avisos["precio_m2"].median()),
@@ -200,3 +217,21 @@ def test_bundle_sin_barrio_real_no_anuncia_barrio(bundle):
     assert not bundle_conoce_barrio(_entrenar(con_barrio=False))
     sin_columna = {**bundle, "feature_cols": [c for c in FEATURE_COLS if c != "barrio_key"]}
     assert not bundle_conoce_barrio(sin_columna)
+
+
+def test_barrio_sin_datos_usa_su_zona_postal(bundle):
+    """Un barrio que el modelo no conoce, pero en una zona postal conocida,
+    se valora con la mediana de su zona y no con la de toda la ciudad."""
+    sin_zona = _valor(bundle, "Barrio Inventado")
+    en_poblado = score_single({**CASA, "barrio": "Barrio Inventado", "codigo_postal": "050021"}, bundle)
+    en_candelaria = score_single({**CASA, "barrio": "Barrio Inventado", "codigo_postal": "050012"}, bundle)
+    assert not sin_zona["zona_postal_en_modelo"]
+    assert en_poblado["zona_postal_en_modelo"] and not en_poblado["barrio_en_modelo"]
+    assert en_candelaria["valor_predicho"] < sin_zona["valor_predicho"] < en_poblado["valor_predicho"]
+
+
+def test_codigo_postal_desconocido_cae_a_la_ciudad(bundle):
+    sin_zona = _valor(bundle, "Barrio Inventado")
+    rara = score_single({**CASA, "barrio": "Barrio Inventado", "codigo_postal": "999999"}, bundle)
+    assert not rara["zona_postal_en_modelo"]
+    assert rara["valor_predicho"] == sin_zona["valor_predicho"]

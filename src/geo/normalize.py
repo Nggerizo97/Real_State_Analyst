@@ -111,3 +111,26 @@ def barrio_key(city_token, barrio) -> str:
     if not barrio_norm or not city_norm or city_norm in BLANK_MARKERS:
         return BARRIO_OTRO
     return f"{city_norm} | {barrio_norm}"
+
+
+# Categoria de las filas sin codigo postal o con una zona sin masa suficiente.
+ZONA_POSTAL_OTRA = "zona_postal_otra"
+
+
+def zona_postal_key(codigo_postal) -> str:
+    """Llave de zona postal 4-72 que ven el modelo y sus estadisticas.
+
+    Como barrio_key, es la unica definicion para el entrenamiento (04), la
+    inferencia batch (05) y la app. El codigo postal ya es nacional y unico
+    (empieza por el codigo del departamento), asi que la llave es el codigo
+    de 6 digitos; cualquier otra cosa ('', None, 'nan', '5001') es
+    ZONA_POSTAL_OTRA.
+    """
+    if codigo_postal is None:
+        return ZONA_POSTAL_OTRA
+    texto = str(codigo_postal).strip()
+    if texto.endswith(".0"):
+        texto = texto[:-2]  # pandas lo leyo como numero
+    if texto.isdigit() and len(texto) in (5, 6):
+        return texto.zfill(6)
+    return ZONA_POSTAL_OTRA

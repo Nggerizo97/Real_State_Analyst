@@ -36,7 +36,7 @@ Uso en Spark (notebooks de Databricks):
 
 from functools import lru_cache
 
-from .aliases import SECTOR_STOPWORDS
+from .aliases import SECTOR_STOPWORDS, ZONAS_ADMINISTRATIVAS
 from .normalize import normalize_location, normalize_text
 
 # Un alias de un solo token y muy corto ('toro', 'hato', 'rico', 'une')
@@ -48,6 +48,20 @@ STANDALONE_PRIORITY_FLOOR = 50
 
 # Alias que jamas deben resolver municipio: aparecen en casi toda direccion.
 ALIAS_BLOCKLIST = {"colombia"}
+
+# Un municipio con esta prioridad o mas (las ~20 ciudades principales) se
+# trata como contexto aunque no sea el del aviso: "cerca a Bogota" en un aviso
+# de Chia no es un barrio. Uno menor solo es contexto si es del mismo
+# departamento o mercado; si no, "Andalucia" en "Barranquilla, Comuna 19,
+# Andalucia" es el barrio y no el municipio del Valle.
+CONTEXT_PRIORITY_FLOOR = 80
+
+# Largo minimo de una llave sin espacios para emparejar "bocagrande" con
+# "boca grande"; evita juntar palabras cortas al azar.
+MIN_COMPACT_LEN = 6
+
+# Orden de preferencia por nivel cuando el texto nombra varios lugares.
+_NIVEL_RANK = {"barrio": 0, "centro_poblado": 1, "cabecera": 1, "vereda": 2, "comuna": 3}
 
 MATCH_BARRIO = "barrio"
 MATCH_MUNICIPIO = "municipio"
@@ -66,6 +80,7 @@ EMPTY_RESULT = {
     "barrio_zona": None,
     "barrio_precision": None,
     "barrio_texto": None,
+    "codigo_postal": None,
     "lat": None,
     "lon": None,
     "geo_source": None,
@@ -144,24 +159,32 @@ class GeoResolver:
         for bucket in self.alias_index.values():
             bucket.sort(key=lambda item: (-len(item[0]), -item[2]))
 
-        # Barrios indexados por municipio y primer token.
+        # Barrios indexados por municipio y primer token. Ademas, un indice
+        # "compacto" sin espacios: el oficial es "Boca Grande" y el aviso dice
+        # "Bocagrande" (o al reves con "Castillogrande").
         self.barrio_index = {}
+        self.barrio_compacto = {}
         for record in self.dim_barrio.itertuples():
             phrase = tuple(record.key_barrio.split())
             if not phrase:
                 continue
-            bucket = self.barrio_index.setdefault(record.cod_mpio, {})
-            bucket.setdefault(phrase[0], []).append(
-                (
-                    phrase,
-                    record.barrio,
-                    record.cod_barrio,
-                    record.zona,
-                    record.precision,
-                    float(record.barrio_lat) if record.barrio_lat == record.barrio_lat else None,
-                    float(record.barrio_lon) if record.barrio_lon == record.barrio_lon else None,
-                )
+            codigo_postal = getattr(record, "codigo_postal", None)
+            entry = (
+                phrase,
+                record.barrio,
+                record.cod_barrio,
+                record.zona,
+                record.precision,
+                float(record.barrio_lat) if record.barrio_lat == record.barrio_lat else None,
+                float(record.barrio_lon) if record.barrio_lon == record.barrio_lon else None,
+                getattr(record, "nivel", "barrio"),
+                codigo_postal if isinstance(codigo_postal, str) else None,
             )
+            bucket = self.barrio_index.setdefault(record.cod_mpio, {})
+            bucket.setdefault(phrase[0], []).append(entry)
+            compacto = "".join(phrase)
+            if len(compacto) >= MIN_COMPACT_LEN:
+                self.barrio_compacto.setdefault(record.cod_mpio, {}).setdefault(compacto, entry)
         for municipio_bucket in self.barrio_index.values():
             for token_bucket in municipio_bucket.values():
                 token_bucket.sort(key=lambda item: -len(item[0]))
@@ -253,25 +276,78 @@ class GeoResolver:
             ),
         )
 
-    def _find_barrio(self, text_tokens, cod_mpio, consumed):
+    def _find_barrio(self, text_tokens, cod_mpio, consumed, ubicacion_len=None):
+        """Mejor barrio del texto y la comuna o localidad que lo acompana.
+
+        Devuelve (hit, zona_hit), cada uno (entry, (inicio, fin)) o None.
+
+        Antes ganaba la frase mas larga y, en empate, la primera: "Medellin,
+        El Poblado, Provenza" quedaba en El Poblado y "Bogota, Usaquen,
+        Cedritos" en Usaquen. Ahora el orden es:
+        1. lo que esta en la ubicacion sobre lo que esta en el titulo,
+        2. barrio, luego centro poblado o cabecera, luego vereda, y al final
+           comuna o localidad (ZONAS_ADMINISTRATIVAS), que pasa a barrio_zona,
+        3. la frase mas larga, 4. la primera que aparece.
+        """
         municipio_bucket = self.barrio_index.get(cod_mpio)
         if not municipio_bucket:
-            return None
-        best = None
+            return None, None
+        if ubicacion_len is None:
+            ubicacion_len = len(text_tokens)
+        zonas = ZONAS_ADMINISTRATIVAS.get(cod_mpio, ())
+        compacto = self.barrio_compacto.get(cod_mpio, {})
+        hits = []
         for position, token in enumerate(text_tokens):
             if position in consumed:
                 continue
             for entry in municipio_bucket.get(token, []):
-                phrase = entry[0]
-                end = position + len(phrase)
-                if tuple(text_tokens[position:end]) != phrase:
+                end = position + len(entry[0])
+                if tuple(text_tokens[position:end]) != entry[0]:
                     continue
                 if any(index in consumed for index in range(position, end)):
                     continue
-                if best is None or len(phrase) > len(best[0][0]):
-                    best = (entry, (position, end))
+                hits.append((entry, (position, end)))
                 break
-        return best
+            # Mismo nombre con otro corte de palabras ("boca grande" / "bocagrande").
+            for size in (1, 2, 3):
+                end = position + size
+                if end > len(text_tokens) or any(index in consumed for index in range(position, end)):
+                    break
+                entry = compacto.get("".join(text_tokens[position:end]))
+                if entry is not None and len(entry[0]) != size:
+                    hits.append((entry, (position, end)))
+        if not hits:
+            return None, None
+
+        def nivel(hit):
+            entry = hit[0]
+            return "comuna" if " ".join(entry[0]) in zonas else entry[7]
+
+        hits.sort(key=lambda hit: (
+            hit[1][0] >= ubicacion_len,
+            _NIVEL_RANK.get(nivel(hit), 0),
+            -len(hit[0][0]),
+            hit[1][0],
+        ))
+        best = hits[0]
+        zona = next(
+            (hit for hit in hits[1:] if nivel(hit) == "comuna" and hit[0][1] != best[0][1]),
+            None,
+        )
+        return best, zona
+
+    def _es_contexto(self, candidate, chosen) -> bool:
+        """Si un nombre de municipio del texto es contexto geografico o puede ser barrio."""
+        if chosen is None or candidate["cod_mpio"] == chosen["cod_mpio"] or candidate["corroborated"]:
+            return True
+        otro = self.municipio_by_code[candidate["cod_mpio"]]
+        elegido = self.municipio_by_code[chosen["cod_mpio"]]
+        mismo_mercado = otro["market_token"] != "mercado_otro" and otro["market_token"] == elegido["market_token"]
+        return (
+            otro["cod_dpto"] == elegido["cod_dpto"]
+            or mismo_mercado
+            or otro["priority"] >= CONTEXT_PRIORITY_FLOOR
+        )
 
     @staticmethod
     def _free_text_barrio(text_tokens, consumed):
@@ -315,14 +391,16 @@ class GeoResolver:
         )
         chosen = self._pick_municipio(candidates)
 
-        # Todo tramo que parezca nombre de municipio es contexto geografico,
-        # no nombre de barrio, aunque no sea el municipio elegido. Sin esto,
+        # Un tramo con nombre de municipio es contexto geografico, no barrio,
+        # si ese municipio es plausible para el aviso (_es_contexto). Sin esto,
         # un aviso de Chia que menciona Bogota terminaba con barrio_texto
-        # 'bogota bogota'. Los barrios que comparten nombre con un municipio
-        # se siguen recuperando por la capa DIVIPOLA de barrios.
+        # 'bogota bogota'. Pero excluirlos todos borraba los barrios que se
+        # llaman como un municipio lejano: en Barranquilla se perdian
+        # Andalucia, La Cumbre, Betania o La Paz (49 % de los avisos sin barrio).
         context_spans = {
             index
             for candidate in candidates
+            if self._es_contexto(candidate, chosen)
             for index in range(*candidate["span"])
         }
         context_spans.update(
@@ -376,18 +454,24 @@ class GeoResolver:
             geo_confidence=75 if chosen["corroborated"] else 65,
         )
 
-        barrio_hit = self._find_barrio(text_tokens, municipio["cod_mpio"], consumed)
+        barrio_hit, zona_hit = self._find_barrio(
+            text_tokens, municipio["cod_mpio"], consumed, len(ubicacion_tokens)
+        )
         if barrio_hit is not None:
             entry, span = barrio_hit
-            _, barrio, cod_barrio, zona, precision, lat, lon = entry
+            _, barrio, cod_barrio, zona, precision, lat, lon, _nivel, codigo_postal = entry
             consumed.update(range(*span))
+            if zona_hit is not None:
+                consumed.update(range(*zona_hit[1]))
+                zona = zona_hit[0][1]
             result.update(
-                cod_barrio=cod_barrio or None,
+                cod_barrio=cod_barrio if isinstance(cod_barrio, str) and cod_barrio else None,
                 barrio=barrio,
-                barrio_zona=zona if zona == zona else None,
+                barrio_zona=zona if isinstance(zona, str) and zona else None,
                 barrio_precision=precision,
+                codigo_postal=codigo_postal,
                 geo_match_level=MATCH_BARRIO,
-                geo_confidence=95 if precision == "oficial_DANE" else 85,
+                geo_confidence=95 if precision in ("oficial_DANE", "oficial_4_72") else 85,
             )
             if lat is not None and lon is not None:
                 result.update(lat=lat, lon=lon, geo_source=MATCH_BARRIO)
@@ -437,6 +521,7 @@ GEO_STRUCT_FIELDS = [
     ("geo_source", "string"),
     ("geo_match_level", "string"),
     ("geo_confidence", "int"),
+    ("codigo_postal", "string"),
 ]
 
 
